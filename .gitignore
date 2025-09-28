@@ -1,0 +1,65 @@
+# ESP-IDF build files
+build/
+managed_components/
+
+# Configuration files
+sdkconfig.old
+.DS_Store
+
+# Python files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Dependencies
+**/node_modules/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Flash download tool
+download.config
+
+# ESP-IDF specific
+components/*/build/
+examples/**/build/
+.pio
+.platformio
+components/esptool_py/esptool/
+components/partition_table/gen_esp32part.exe
+components/bootloader/subproject/main/bootloader.map
+components/bootloader/subproject/main/bootloader.elf
+
+# CLion
+cmake-build-*/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version

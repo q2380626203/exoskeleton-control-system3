@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP32 Motor Control</title>
+    <meta charset="UTF-8"> <!-- 添加这一行来指定UTF-8编码 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { 
+            max-width: 500px; 
+            margin: 20px auto; 
+            padding: 30px; 
+            background-color: #fff; 
+            border-radius: 10px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+        }
+        h1 { text-align: center; color: #333; margin-bottom: 25px; }
+        .param-group { 
+            margin-bottom: 15px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between;
+        }
+        label { 
+            flex: 1; 
+            margin-right: 15px; 
+            font-weight: bold; 
+            color: #555; 
+        }
+        input[type="number"] { 
+            flex: 2; 
+            padding: 10px; 
+            border: 1px solid #ddd; 
+            border-radius: 5px; 
+            font-size: 16px; 
+            box-sizing: border-box;
+        }
+        button { 
+            background-color: #007bff; 
+            color: white; 
+            padding: 12px 20px; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            width: 100%; 
+            font-size: 18px; 
+            font-weight: bold;
+            margin-top: 25px;
+            transition: background-color 0.3s ease;
+        }
+        button:hover { 
+            background-color: #0056b3; 
+        }
+        #response { 
+            margin-top: 20px; 
+            text-align: center; 
+            font-weight: bold; 
+            color: green; 
+            animation: fadeIn 0.5s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>设置电机参数</h1>
+        <form id="motorControlForm">
+            <div class="param-group">
+                <label for="idInput">电机ID (id):</label>
+                <input type="number" id="idInput" name="id" value="0" min="0" max="255">
+            </div>
+            <div class="param-group">
+                <label for="modeInput">模式 (mode):</label>
+                <input type="number" id="modeInput" name="mode" value="1" min="0" max="255">
+            </div>
+            <div class="param-group">
+                <label for="posInput">位置 (pos):</label>
+                <input type="number" id="posInput" name="pos" step="0.001" value="0.0" min="-100" max="100">
+            </div>
+            <div class="param-group">
+                <label for="velInput">速度 (vel):</label>
+                <input type="number" id="velInput" name="vel" step="0.1" value="40.0" min="0" max="100">
+            </div>
+            <div class="param-group">
+                <label for="tInput">力矩 (t):</label>
+                <input type="number" id="tInput" name="t" step="0.001" value="0.0" min="-10" max="10">
+            </div>
+            <div class="param-group">
+                <label for="kpInput">Kp增益 (kp):</label>
+                <input type="number" id="kpInput" name="kp" step="0.001" value="0.0" min="0" max="10">
+            </div>
+            <div class="param-group">
+                <label for="kdInput">Kd增益 (kd):</label>
+                <input type="number" id="kdInput" name="kd" step="0.001" value="0.01" min="0" max="1.0">
+            </div>
+            <button type="submit">更新参数</button>
+        </form>
+        <p id="response"></p>
+    </div>
+
+    <script>
+        document.getElementById('motorControlForm').addEventListener('submit', function(event) {
+            event.preventDefault(); // 阻止默认表单提交
+
+            const idValue = document.getElementById('idInput').value;
+            const modeValue = document.getElementById('modeInput').value;
+            const posValue = document.getElementById('posInput').value;
+            const velValue = document.getElementById('velInput').value;
+            const tValue = document.getElementById('tInput').value;
+            const kpValue = document.getElementById('kpInput').value;
+            const kdValue = document.getElementById('kdInput').value;
+            const responseElement = document.getElementById('response');
+
+            // 构建URL编码的表单数据
+            const formData = new URLSearchParams();
+            formData.append('id', idValue);
+            formData.append('mode', modeValue);
+            formData.append('pos', posValue);
+            formData.append('vel', velValue);
+            formData.append('t', tValue);
+            formData.append('kp', kpValue);
+            formData.append('kd', kdValue);
+
+            fetch('/set_params', { // Changed endpoint to /set_params
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: formData.toString() // Send URL-encoded form data
+            })
+            .then(response => response.text())
+            .then(data => {
+                responseElement.textContent = data;
+                responseElement.style.color = 'green';
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                responseElement.textContent = '更新参数失败。';
+                responseElement.style.color = 'red';
+            });
+        });
+    </script>
+</body>
+</html>

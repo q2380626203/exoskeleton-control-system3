@@ -1,0 +1,7 @@
+# ESP-IDF Partition Table
+# This table allocates a larger space for the application, suitable for large models.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        24K
+otadata,  data, ota,     ,        8K
+phy_init, data, phy,     ,        4K
+app0,     app,  ota_0,   ,        4M
