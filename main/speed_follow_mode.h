@@ -9,6 +9,7 @@
 // 速度跟随模式状态
 typedef enum {
     SPEED_FOLLOW_IDLE,              // 空闲周期（300ms）
+    SPEED_FOLLOW_WAITING,           // 等待状态：阈值触发后等待300ms检测另一电机速度
     SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
     SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
     SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
@@ -102,6 +103,8 @@ private:
     bool _is_active;                // 速度跟随是否激活
     float _threshold_value;         // 触发阈值（默认10.0）
     bool _first_trigger_detected;   // 是否已检测到首次触发
+    uint8_t _triggered_channel;     // 触发的通道（6或7）
+    uint32_t _waiting_start_time;   // 等待开始时间
 
 
     // 电机1全局参数指针

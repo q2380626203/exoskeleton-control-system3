@@ -5,9 +5,10 @@
 static const char *TAG = "SpeedFollow";
 
 SpeedFollowMode::SpeedFollowMode()
-    : _state(SPEED_FOLLOW_MOTOR1_WORKING), _phase_start_time(0),
+    : _state(SPEED_FOLLOW_IDLE), _phase_start_time(0),
       _active_motor(1), _lifting_motor(0),
       _auto_switch_enabled(false), _is_active(false), _threshold_value(10.0f), _first_trigger_detected(false),
+      _triggered_channel(0), _waiting_start_time(0),
       _motor1_id(nullptr), _motor1_mode(nullptr), _motor1_pos(nullptr),
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
@@ -74,17 +75,17 @@ void SpeedFollowMode::init() {
     _config_motor2.idle.kp = 0.0f;
     _config_motor2.idle.kd = 0.0f;
 
-    _state = SPEED_FOLLOW_MOTOR1_WORKING;
-    _active_motor = 1;
+    _state = SPEED_FOLLOW_IDLE;
+    _active_motor = 0;
     _lifting_motor = 0;
     _phase_start_time = esp_timer_get_time() / 1000;
-
+    _triggered_channel = 0;
+    _waiting_start_time = 0;
 
     ESP_LOGI(TAG, "双电机协作速度跟随模式已初始化");
-    ESP_LOGI(TAG, "工作模式：1号检测+v，2号检测-v，交替工作");
+    ESP_LOGI(TAG, "新工作模式：ch6触发→等待300ms→检测2号-v，ch7触发→等待300ms→检测1号+v");
     ESP_LOGI(TAG, "电机1触发条件: 速度 > %.1f rad/s", _config_motor1.trigger_speed);
     ESP_LOGI(TAG, "电机2触发条件: 速度 < %.1f rad/s", _config_motor2.trigger_speed);
-    ESP_LOGI(TAG, "初始工作电机: %d号", _active_motor);
 }
 
 void SpeedFollowMode::setGlobalParams(uint8_t* motor_id, uint8_t* motor_mode, float* motor_pos,
@@ -136,6 +137,43 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
     }
 
     switch (_state) {
+        case SPEED_FOLLOW_WAITING:
+            // 等待状态：等待300ms后检测对应电机速度
+            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+
+            if (current_time - _waiting_start_time >= 300) {
+                // 300ms等待完成，检测对应电机速度
+                if (_triggered_channel == 6) {
+                    // ch6触发，检测2号电机-v
+                    if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
+                        _state = SPEED_FOLLOW_PHASE1;
+                        _lifting_motor = 2;
+                        _active_motor = 1; // 下个周期1号工作
+                        _phase_start_time = current_time;
+                        ESP_LOGI(TAG, "🚀 ch6触发后检测到2号-v=%.3f，2号开始抬腿0.6s", motor_data.vel);
+
+                        setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, _config_motor2.phase1.vel,
+                                      _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                    }
+                } else if (_triggered_channel == 7) {
+                    // ch7触发，检测1号电机+v
+                    if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
+                        _state = SPEED_FOLLOW_PHASE1;
+                        _lifting_motor = 1;
+                        _active_motor = 2; // 下个周期2号工作
+                        _phase_start_time = current_time;
+                        ESP_LOGI(TAG, "🚀 ch7触发后检测到1号+v=%.3f，1号开始抬腿0.6s", motor_data.vel);
+
+                        setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, _config_motor1.phase1.vel,
+                                      _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                    }
+                }
+            }
+            break;
+
         case SPEED_FOLLOW_MOTOR1_WORKING:
             // 1号电机工作状态：立即检测+v触发抬腿
             setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
@@ -291,6 +329,8 @@ void SpeedFollowMode::reset() {
     _phase_start_time = 0;
     _is_active = false;
     _first_trigger_detected = false;
+    _triggered_channel = 0;
+    _waiting_start_time = 0;
     ESP_LOGI(TAG, "速度跟随模式已重置");
 }
 
@@ -321,29 +361,30 @@ void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
 
     if (ch6_triggered || ch7_triggered) {
         if (!_first_trigger_detected) {
-            // 首次触发，根据先动准则设置起始电机
+            // 首次触发，进入等待状态
             if (ch6_triggered && ch7_triggered) {
                 // 两者都触发，选择数值更大的一方
-                _active_motor = (ch6_max > ch7_max) ? 1 : 2;
-                ESP_LOGI(TAG, "🚀 双通道触发！选择更大值通道%d先动 (ch6=%.1f, ch7=%.1f)",
-                         _active_motor, ch6_max, ch7_max);
+                _triggered_channel = (ch6_max > ch7_max) ? 6 : 7;
+                ESP_LOGI(TAG, "🚀 双通道触发！选择ch%d (ch6=%.1f, ch7=%.1f)，等待300ms检测对应电机",
+                         _triggered_channel, ch6_max, ch7_max);
             } else if (ch6_triggered) {
-                _active_motor = 1;
-                ESP_LOGI(TAG, "🚀 ch6先触发！设置1号电机先动 (ch6=%.1f)", ch6_max);
+                _triggered_channel = 6;
+                ESP_LOGI(TAG, "🚀 ch6触发(%.1f)！等待300ms检测2号电机-v", ch6_max);
             } else {
-                _active_motor = 2;
-                ESP_LOGI(TAG, "🚀 ch7先触发！设置2号电机先动 (ch7=%.1f)", ch7_max);
+                _triggered_channel = 7;
+                ESP_LOGI(TAG, "🚀 ch7触发(%.1f)！等待300ms检测1号电机+v", ch7_max);
             }
 
             _first_trigger_detected = true;
         }
 
-        // 激活速度跟随模式
+        // 激活速度跟随模式，进入等待状态
         _is_active = true;
-        _state = (_active_motor == 1) ? SPEED_FOLLOW_MOTOR1_WORKING : SPEED_FOLLOW_MOTOR2_WORKING;
-        _phase_start_time = esp_timer_get_time() / 1000;
+        _state = SPEED_FOLLOW_WAITING;
+        _waiting_start_time = esp_timer_get_time() / 1000;
 
-        ESP_LOGI(TAG, "✅ 速度跟随模式已激活！起始电机: %d号", _active_motor);
+        ESP_LOGI(TAG, "✅ 进入等待状态，300ms后检测%s电机速度",
+                 _triggered_channel == 6 ? "2号" : "1号");
     }
 }
 
@@ -352,6 +393,8 @@ void SpeedFollowMode::manualDeactivate() {
         _is_active = false;
         _state = SPEED_FOLLOW_IDLE;
         _first_trigger_detected = false;
+        _triggered_channel = 0;
+        _waiting_start_time = 0;
         ESP_LOGI(TAG, "❌ 速度跟随模式已手动关闭");
     }
 }
