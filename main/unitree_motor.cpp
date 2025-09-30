@@ -239,8 +239,7 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
 
                     // 5. 解析数据
                     if (unpack_motor_data_go_m8010_6(rx_buffer, data)) {
-                        // 按指定格式打印电机2的结果：位置,速度,力矩
-                        printf("motor2:%.6f,%.6f,%.6f\n", data.pos, data.vel, data.t);
+                        // 数据解析成功，返回到main.cpp进行统一打印
                         return ESP_OK;
                     } else {
                         ESP_LOGW(TAG_MOTOR, "数据解析失败，继续查找");

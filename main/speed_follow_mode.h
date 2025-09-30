@@ -61,10 +61,17 @@ public:
     // 更新电机数据，检测触发条件，并修改全局参数
     void update(const MotorDataA1& motor_data);
 
-    // 设置全局参数的访问接口
+    // 设置全局参数的访问接口（兼容性，指向电机2）
     void setGlobalParams(uint8_t* motor_id, uint8_t* motor_mode, float* motor_pos,
                         float* motor_vel, float* motor_t, float* motor_kp, float* motor_kd,
                         SemaphoreHandle_t mutex);
+
+    // 设置双电机参数的访问接口
+    void setDualMotorParams(uint8_t* motor1_id, uint8_t* motor1_mode, float* motor1_pos, float* motor1_vel,
+                           float* motor1_t, float* motor1_kp, float* motor1_kd,
+                           uint8_t* motor2_id, uint8_t* motor2_mode, float* motor2_pos, float* motor2_vel,
+                           float* motor2_t, float* motor2_kp, float* motor2_kd,
+                           SemaphoreHandle_t mutex);
 
     // 获取当前状态
     speed_follow_state_t getState() const { return _state; }
@@ -74,24 +81,35 @@ public:
 
 private:
     speed_follow_state_t _state;
-    speed_follow_config_t _config;
+    speed_follow_config_t _config_motor1;  // 电机1配置
+    speed_follow_config_t _config_motor2;  // 电机2配置
     uint32_t _phase_start_time;
 
-    // 全局参数指针
-    uint8_t* _global_motor_id;
-    uint8_t* _global_motor_mode;
-    float* _global_motor_pos;
-    float* _global_motor_vel;
-    float* _global_motor_t;
-    float* _global_motor_kp;
-    float* _global_motor_kd;
+    // 电机1全局参数指针
+    uint8_t* _motor1_id;
+    uint8_t* _motor1_mode;
+    float* _motor1_pos;
+    float* _motor1_vel;
+    float* _motor1_t;
+    float* _motor1_kp;
+    float* _motor1_kd;
+
+    // 电机2全局参数指针（兼容性）
+    uint8_t* _motor2_id;
+    uint8_t* _motor2_mode;
+    float* _motor2_pos;
+    float* _motor2_vel;
+    float* _motor2_t;
+    float* _motor2_kp;
+    float* _motor2_kd;
+
     SemaphoreHandle_t _global_mutex;
 
     // 检测触发条件
     bool checkTriggerCondition(const MotorDataA1& motor_data);
 
-    // 设置全局电机参数
-    void setGlobalMotorParams(uint8_t mode, float pos, float vel, float torque, float kp, float kd);
+    // 设置指定电机的全局参数
+    void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
 };
 
 #endif // SPEED_FOLLOW_MODE_H
