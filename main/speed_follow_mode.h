@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "position_buffer.h"
 
 // 速度跟随模式状态
 typedef enum {
@@ -85,6 +86,9 @@ public:
     void manualDeactivate();                                      // 手动关闭
     bool isActive() const { return _is_active; }                  // 获取激活状态
 
+    // 设置差值缓存区指针（用于超时清空）
+    void setDiffBuffers(motor_position_buffers_t* buffers);
+
     // 重置状态
     void reset();
 
@@ -97,6 +101,7 @@ private:
     // 新增：工作电机管理
     uint8_t _active_motor;          // 当前工作电机（1或2）
     uint8_t _lifting_motor;         // 当前抬腿电机（1或2）
+    uint32_t _working_start_time;   // 工作状态开始时间
 
     // 自动开关控制
     bool _auto_switch_enabled;      // 自动开关是否启用
@@ -126,6 +131,9 @@ private:
     float* _motor2_kd;
 
     SemaphoreHandle_t _global_mutex;
+
+    // 差值缓存区指针（用于超时清空）
+    motor_position_buffers_t* _diff_buffers;
 
     // 检测触发条件
     bool checkTriggerCondition(const MotorDataA1& motor_data);

@@ -6,14 +6,14 @@ static const char *TAG = "SpeedFollow";
 
 SpeedFollowMode::SpeedFollowMode()
     : _state(SPEED_FOLLOW_IDLE), _phase_start_time(0),
-      _active_motor(1), _lifting_motor(0),
+      _active_motor(1), _lifting_motor(0), _working_start_time(0),
       _auto_switch_enabled(false), _is_active(false), _threshold_value(10.0f), _first_trigger_detected(false),
       _triggered_channel(0), _waiting_start_time(0),
       _motor1_id(nullptr), _motor1_mode(nullptr), _motor1_pos(nullptr),
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
-      _global_mutex(nullptr) {
+      _global_mutex(nullptr), _diff_buffers(nullptr) {
 }
 
 void SpeedFollowMode::init() {
@@ -128,6 +128,10 @@ void SpeedFollowMode::setDualMotorParams(uint8_t* motor1_id, uint8_t* motor1_mod
     _global_mutex = mutex;
 }
 
+void SpeedFollowMode::setDiffBuffers(motor_position_buffers_t* buffers) {
+    _diff_buffers = buffers;
+}
+
 void SpeedFollowMode::update(const MotorDataA1& motor_data) {
     uint32_t current_time = esp_timer_get_time() / 1000; // 转换为毫秒
 
@@ -181,6 +185,24 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
+            // 检测超时（1.2秒未触发）
+            if (current_time - _working_start_time >= 1200) {
+                ESP_LOGW(TAG, "⏱️ 1号电机工作超时1.2s未检测到速度触发，关闭速度跟随模式");
+                _is_active = false;
+                _state = SPEED_FOLLOW_IDLE;
+                _first_trigger_detected = false;
+                _triggered_channel = 0;
+                _working_start_time = 0;
+                // 清空所有缓存区
+                if (_diff_buffers) {
+                    diff_buffer_clear_all(_diff_buffers);
+                    position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
+                    position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
+                    ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                }
+                break;
+            }
+
             // 立即检测速度触发条件
             if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
                 _state = SPEED_FOLLOW_PHASE1;
@@ -200,6 +222,24 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                           _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+
+            // 检测超时（1.2秒未触发）
+            if (current_time - _working_start_time >= 1200) {
+                ESP_LOGW(TAG, "⏱️ 2号电机工作超时1.2s未检测到速度触发，关闭速度跟随模式");
+                _is_active = false;
+                _state = SPEED_FOLLOW_IDLE;
+                _first_trigger_detected = false;
+                _triggered_channel = 0;
+                _working_start_time = 0;
+                // 清空所有缓存区
+                if (_diff_buffers) {
+                    diff_buffer_clear_all(_diff_buffers);
+                    position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
+                    position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
+                    ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                }
+                break;
+            }
 
             // 立即检测速度触发条件
             if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
@@ -280,6 +320,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                     _state = SPEED_FOLLOW_MOTOR2_WORKING;
                 }
                 _phase_start_time = current_time;
+                _working_start_time = current_time; // 记录工作状态开始时间
                 ESP_LOGI(TAG, "🔄 空闲完成，%d号电机开始工作检测", _active_motor);
             }
 
@@ -331,6 +372,7 @@ void SpeedFollowMode::reset() {
     _first_trigger_detected = false;
     _triggered_channel = 0;
     _waiting_start_time = 0;
+    _working_start_time = 0;
     ESP_LOGI(TAG, "速度跟随模式已重置");
 }
 
@@ -395,6 +437,7 @@ void SpeedFollowMode::manualDeactivate() {
         _first_trigger_detected = false;
         _triggered_channel = 0;
         _waiting_start_time = 0;
+        _working_start_time = 0;
         ESP_LOGI(TAG, "❌ 速度跟随模式已手动关闭");
     }
 }

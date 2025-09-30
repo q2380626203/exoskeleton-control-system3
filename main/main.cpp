@@ -79,6 +79,9 @@ void motor_control_task(void *pvParameters) {
                                    &global_motor_2.motor_vel, &global_motor_2.motor_t, &global_motor_2.motor_kp, &global_motor_2.motor_kd,
                                    motor_params_mutex);
 
+    // 设置差值缓存区访问（用于超时清空）
+    speed_follow.setDiffBuffers(&position_buffers);
+
     // 统计计数器
     uint32_t loop_count = 0;
 
