@@ -8,15 +8,16 @@
 
 // 速度跟随模式状态
 typedef enum {
-    SPEED_FOLLOW_IDLE,      // 空闲状态（持续300ms）
-    SPEED_FOLLOW_PHASE1,    // 第一阶段：负向运动
-    SPEED_FOLLOW_PHASE2     // 第二阶段：正向运动
+    SPEED_FOLLOW_IDLE,              // 空闲周期（300ms）
+    SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
+    SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
+    SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
+    SPEED_FOLLOW_PHASE2             // 第二阶段：压腿动作（0.6s）
 } speed_follow_state_t;
 
 // 速度跟随模式配置
 typedef struct {
     float trigger_speed;    // 触发速度阈值
-    uint32_t idle_duration_ms;    // 空闲状态持续时间
     uint32_t phase1_duration_ms;  // 第一阶段持续时间
     uint32_t phase2_duration_ms;  // 第二阶段持续时间
 
@@ -76,6 +77,13 @@ public:
     // 获取当前状态
     speed_follow_state_t getState() const { return _state; }
 
+    // 自动开关控制函数
+    void enableAutoSwitch(bool enable = true);                    // 启用/禁用自动开关
+    void setThreshold(float threshold);                           // 设置触发阈值
+    void checkThresholdAndActivate(float ch6_max, float ch7_max); // 检查阈值并激活
+    void manualDeactivate();                                      // 手动关闭
+    bool isActive() const { return _is_active; }                  // 获取激活状态
+
     // 重置状态
     void reset();
 
@@ -84,6 +92,17 @@ private:
     speed_follow_config_t _config_motor1;  // 电机1配置
     speed_follow_config_t _config_motor2;  // 电机2配置
     uint32_t _phase_start_time;
+
+    // 新增：工作电机管理
+    uint8_t _active_motor;          // 当前工作电机（1或2）
+    uint8_t _lifting_motor;         // 当前抬腿电机（1或2）
+
+    // 自动开关控制
+    bool _auto_switch_enabled;      // 自动开关是否启用
+    bool _is_active;                // 速度跟随是否激活
+    float _threshold_value;         // 触发阈值（默认10.0）
+    bool _first_trigger_detected;   // 是否已检测到首次触发
+
 
     // 电机1全局参数指针
     uint8_t* _motor1_id;
@@ -110,6 +129,7 @@ private:
 
     // 设置指定电机的全局参数
     void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
+
 };
 
 #endif // SPEED_FOLLOW_MODE_H

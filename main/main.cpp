@@ -6,9 +6,11 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h" // For Semaphore
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "unitree_motor.h"
 #include "motor_commands.h"
 #include "speed_follow_mode.h"
+#include "position_buffer.h"
 #include "driver/gpio.h"
 
 static const char *TAG = "MAIN";
@@ -24,6 +26,7 @@ static const char *TAG = "MAIN";
 
 UnitreeMotorDriver motor_driver;
 SpeedFollowMode speed_follow; // 速度跟随模式实例
+motor_position_buffers_t position_buffers; // 位置缓存区
 
 
 // Motor command parameters for both motors, protected by a mutex
@@ -61,6 +64,13 @@ void motor_control_task(void *pvParameters) {
 
     // 初始化速度跟随模式
     speed_follow.init();
+
+    // 启用自动开关功能
+    speed_follow.enableAutoSwitch(true);
+    speed_follow.setThreshold(6.0f);
+
+    // 初始化位置缓存区
+    position_buffer_init(&position_buffers);
 
     // 设置双电机速度跟随模式参数访问
     speed_follow.setDualMotorParams(&global_motor_1.motor_id, &global_motor_1.motor_mode, &global_motor_1.motor_pos,
@@ -105,6 +115,9 @@ void motor_control_task(void *pvParameters) {
         esp_err_t err1 = motor_driver.sendRecv(control_cmd_1, motor_data_1);
         if (err1 == ESP_OK) {
             speed_follow.update(motor_data_1);
+            // 添加位置数据到缓存区
+            uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
+            position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
 
         // 控制电机2 - FOC模式，通过MIT参数控制
@@ -120,13 +133,41 @@ void motor_control_task(void *pvParameters) {
         esp_err_t err2 = motor_driver.sendRecv(control_cmd_2, motor_data_2);
         if (err2 == ESP_OK) {
             speed_follow.update(motor_data_2);
+            // 添加位置数据到缓存区
+            uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
+            position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
         }
 
-        // 合并打印两个电机的数据：电机1(ch0,ch1,ch2) + 电机2(ch3,ch4,ch5)
+        // 合并打印两个电机的数据：电机1(ch0,ch1,ch2) + 电机2(ch3,ch4,ch5) + 波峰波谷差值最大值(ch6,ch7)
         if (err1 == ESP_OK && err2 == ESP_OK) {
-            printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            // 分析波形并获取差值
+            wave_analysis_result_t motor1_wave, motor2_wave;
+            float motor1_diff = 0.0f, motor2_diff = 0.0f;
+            uint32_t timestamp = esp_timer_get_time() / 1000;
+
+            if (position_buffer_analyze_motor1_wave(&position_buffers, &motor1_wave)) {
+                motor1_diff = motor1_wave.peak_valley_diff;
+                // 将ch6差值存入缓存区
+                diff_buffer_add_ch6(&position_buffers, motor1_diff, timestamp);
+            }
+
+            if (position_buffer_analyze_motor2_wave(&position_buffers, &motor2_wave)) {
+                motor2_diff = motor2_wave.peak_valley_diff;
+                // 将ch7差值存入缓存区
+                diff_buffer_add_ch7(&position_buffers, motor2_diff, timestamp);
+            }
+
+            // 获取ch6和ch7缓存区的最大值
+            float ch6_max = diff_buffer_get_ch6_max(&position_buffers);
+            float ch7_max = diff_buffer_get_ch7_max(&position_buffers);
+
+            // 检查阈值并可能激活速度跟随模式
+            speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
+
+            printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
-                   motor_data_2.pos, motor_data_2.vel, motor_data_2.t);
+                   motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
+                   ch6_max, ch7_max);
         }
 
         loop_count++;
