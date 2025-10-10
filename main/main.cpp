@@ -12,8 +12,12 @@
 #include "speed_follow_mode.h"
 #include "position_buffer.h"
 #include "driver/gpio.h"
+#include "wifi_webserver.h"
 
 static const char *TAG = "MAIN";
+
+// Web服务器句柄
+static httpd_handle_t web_server = NULL;
 
 // 定义电机ID和UART端口/引脚
 #define MOTOR_ID_1      0x01
@@ -47,6 +51,145 @@ SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
 
 // 速度跟随模式配置参数
 static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
+
+// Web服务器命令处理回调
+extern "C" esp_err_t handle_web_command(const char *cmd) {
+    if (strcmp(cmd, "start") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到启动命令");
+        speed_follow.enable(true);
+        return ESP_OK;
+    }
+    else if (strcmp(cmd, "stop") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到停止命令");
+        speed_follow.enable(false);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "[WEB] 未知命令: %s", cmd);
+    return ESP_FAIL;
+}
+
+// Web服务器参数设置回调
+extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
+    if (strcmp(param_name, "threshold") == 0) {
+        ESP_LOGI(TAG, "[WEB] 设置阈值: %.2f", value);
+        global_speed_follow_threshold = value;
+        speed_follow.setThreshold(value);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "[WEB] 未知参数: %s", param_name);
+    return ESP_FAIL;
+}
+
+// Web服务器电机参数设置回调
+extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, float value) {
+    ESP_LOGI(TAG, "[WEB] 电机%d - %s: %.4f", motor, param_name, value);
+
+    // 获取对应电机的配置
+    speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
+
+    if (strcmp(param_name, "trigger_speed") == 0) {
+        config->trigger_speed = value;
+    }
+    else if (strcmp(param_name, "phase1_duration") == 0) {
+        config->phase1_duration_ms = (uint32_t)value;
+    }
+    else if (strcmp(param_name, "phase2_duration") == 0) {
+        config->phase2_duration_ms = (uint32_t)value;
+    }
+    else if (strcmp(param_name, "waiting_duration") == 0) {
+        config->waiting_duration_ms = (uint32_t)value;
+    }
+    else if (strcmp(param_name, "idle_duration") == 0) {
+        config->idle_duration_ms = (uint32_t)value;
+    }
+    // Phase1参数
+    else if (strcmp(param_name, "p1_vel") == 0) {
+        config->phase1.vel = value;
+    }
+    else if (strcmp(param_name, "p1_torque") == 0) {
+        config->phase1.torque = value;
+    }
+    else if (strcmp(param_name, "p1_kp") == 0) {
+        config->phase1.kp = value;
+    }
+    else if (strcmp(param_name, "p1_kd") == 0) {
+        config->phase1.kd = value;
+    }
+    // Phase2参数
+    else if (strcmp(param_name, "p2_vel") == 0) {
+        config->phase2.vel = value;
+    }
+    else if (strcmp(param_name, "p2_torque") == 0) {
+        config->phase2.torque = value;
+    }
+    else if (strcmp(param_name, "p2_kp") == 0) {
+        config->phase2.kp = value;
+    }
+    else if (strcmp(param_name, "p2_kd") == 0) {
+        config->phase2.kd = value;
+    }
+    else {
+        ESP_LOGW(TAG, "[WEB] 未知电机参数: %s", param_name);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+// Web服务器电机参数读取回调
+extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_name, float *value) {
+    // 获取对应电机的配置
+    speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
+
+    if (strcmp(param_name, "trigger_speed") == 0) {
+        *value = config->trigger_speed;
+    }
+    else if (strcmp(param_name, "phase1_duration") == 0) {
+        *value = (float)config->phase1_duration_ms;
+    }
+    else if (strcmp(param_name, "phase2_duration") == 0) {
+        *value = (float)config->phase2_duration_ms;
+    }
+    else if (strcmp(param_name, "waiting_duration") == 0) {
+        *value = (float)config->waiting_duration_ms;
+    }
+    else if (strcmp(param_name, "idle_duration") == 0) {
+        *value = (float)config->idle_duration_ms;
+    }
+    // Phase1参数
+    else if (strcmp(param_name, "p1_vel") == 0) {
+        *value = config->phase1.vel;
+    }
+    else if (strcmp(param_name, "p1_torque") == 0) {
+        *value = config->phase1.torque;
+    }
+    else if (strcmp(param_name, "p1_kp") == 0) {
+        *value = config->phase1.kp;
+    }
+    else if (strcmp(param_name, "p1_kd") == 0) {
+        *value = config->phase1.kd;
+    }
+    // Phase2参数
+    else if (strcmp(param_name, "p2_vel") == 0) {
+        *value = config->phase2.vel;
+    }
+    else if (strcmp(param_name, "p2_torque") == 0) {
+        *value = config->phase2.torque;
+    }
+    else if (strcmp(param_name, "p2_kp") == 0) {
+        *value = config->phase2.kp;
+    }
+    else if (strcmp(param_name, "p2_kd") == 0) {
+        *value = config->phase2.kd;
+    }
+    else {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
 
 // 电机控制任务
 void motor_control_task(void *pvParameters) {
@@ -190,6 +333,29 @@ extern "C" void app_main() {
         return;
     }
 
+    // 初始化WiFi热点
+    ESP_LOGI(TAG, "正在初始化WiFi热点...");
+    if (wifi_init_softap() != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi热点初始化失败！");
+        return;
+    }
+
+    // 启动Web服务器
+    ESP_LOGI(TAG, "正在启动Web服务器...");
+    web_server = start_webserver();
+    if (web_server == NULL) {
+        ESP_LOGE(TAG, "Web服务器启动失败！");
+        return;
+    }
+
+    // 注册Web服务器回调函数
+    register_command_handler(handle_web_command);
+    register_param_handler(handle_web_param);
+    register_motor_param_handler(handle_web_motor_param);
+    register_motor_param_getter(handle_web_get_motor_param);
+    ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
+
+    // 初始化电机驱动
     if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
         ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");
     } else {
@@ -197,5 +363,6 @@ extern "C" void app_main() {
         return;
     }
 
+    // 创建电机控制任务
     xTaskCreate(motor_control_task, "motor_control_task", 4096, NULL, 5, NULL);
 }

@@ -94,6 +94,20 @@ public:
     // 重置状态
     void reset();
 
+    // Web接口：获取电机配置
+    speed_follow_config_t* getMotorConfig(int motor) {
+        return (motor == 1) ? &_config_motor1 : &_config_motor2;
+    }
+
+    // Web接口：启用/禁用速度跟随
+    void enable(bool enabled) {
+        if (enabled) {
+            _is_active = true;
+        } else {
+            manualDeactivate();
+        }
+    }
+
 private:
     speed_follow_state_t _state;
     speed_follow_config_t _config_motor1;  // 电机1配置
