@@ -87,7 +87,7 @@ void SpeedFollowMode::init() {
     _waiting_start_time = 0;
 
     ESP_LOGI(TAG, "双电机协作速度跟随模式已初始化");
-    ESP_LOGI(TAG, "新工作模式：ch6触发→等待300ms→检测2号-v，ch7触发→等待300ms→检测1号+v");
+    ESP_LOGI(TAG, "首次触发模式：ch6触发→等待300ms→检测2号-v，ch7触发→等待300ms→检测1号+v");
     ESP_LOGI(TAG, "电机1触发条件: 速度 > %.1f rad/s", _config_motor1.trigger_speed);
     ESP_LOGI(TAG, "电机2触发条件: 速度 < %.1f rad/s", _config_motor2.trigger_speed);
 }

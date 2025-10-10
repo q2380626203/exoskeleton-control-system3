@@ -45,12 +45,8 @@ static MotorParams global_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 
 SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
 
-
-
-
-
-
-
+// 速度跟随模式配置参数
+static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
 
 // 电机控制任务
 void motor_control_task(void *pvParameters) {
@@ -67,7 +63,7 @@ void motor_control_task(void *pvParameters) {
 
     // 启用自动开关功能
     speed_follow.enableAutoSwitch(true);
-    speed_follow.setThreshold(6.0f);
+    speed_follow.setThreshold(global_speed_follow_threshold);
 
     // 初始化位置缓存区
     position_buffer_init(&position_buffers);
