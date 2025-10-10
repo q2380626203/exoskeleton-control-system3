@@ -19,8 +19,10 @@ SpeedFollowMode::SpeedFollowMode()
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
     _config_motor1.trigger_speed = 0.75f;   // 触发速度：+0.75 rad/s (电机1)
-    _config_motor1.phase1_duration_ms = 600;
-    _config_motor1.phase2_duration_ms = 600;
+    _config_motor1.phase1_duration_ms = 400;
+    _config_motor1.phase2_duration_ms = 400;
+    _config_motor1.waiting_duration_ms = 300;  // 等待时间：300ms
+    _config_motor1.idle_duration_ms = 50;      // 空闲时间：50ms
 
     // 电机1第一阶段参数：1 0.0 +15 +0.9 0.0 0.04
     _config_motor1.phase1.mode = 1;
@@ -48,8 +50,10 @@ void SpeedFollowMode::init() {
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
     _config_motor2.trigger_speed = -0.75f;  // 触发速度：-0.75 rad/s (电机2)
-    _config_motor2.phase1_duration_ms = 600;
-    _config_motor2.phase2_duration_ms = 600;
+    _config_motor2.phase1_duration_ms = 400;
+    _config_motor2.phase2_duration_ms = 400;
+    _config_motor2.waiting_duration_ms = 300;  // 等待时间：300ms
+    _config_motor2.idle_duration_ms = 50;      // 空闲时间：50ms
 
     // 电机2第一阶段参数：1 0.0 -15 -0.9 0.0 0.04
     _config_motor2.phase1.mode = 1;
@@ -142,14 +146,17 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
 
     switch (_state) {
         case SPEED_FOLLOW_WAITING:
-            // 等待状态：等待300ms后检测对应电机速度
+            // 等待状态：等待配置时间后检测对应电机速度
             setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
                           _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-            if (current_time - _waiting_start_time >= 300) {
-                // 300ms等待完成，检测对应电机速度
+            {
+                // 根据触发通道选择对应电机的等待时间配置
+                uint32_t waiting_duration = (_triggered_channel == 6) ? _config_motor2.waiting_duration_ms : _config_motor1.waiting_duration_ms;
+                if (current_time - _waiting_start_time >= waiting_duration) {
+                    // 等待完成，检测对应电机速度
                 if (_triggered_channel == 6) {
                     // ch6触发，检测2号电机-v
                     if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
@@ -175,6 +182,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                                       _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
                     }
                 }
+            }
             }
             break;
 
@@ -255,9 +263,11 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
             break;
 
         case SPEED_FOLLOW_PHASE1:
-            // 抬腿阶段 - 0.6秒
-            if (current_time - _phase_start_time >= 600) {
-                // 抬腿完成，切换工作电机并开始压腿
+            // 抬腿阶段 - 使用配置的持续时间
+            {
+                uint32_t phase1_duration = (_lifting_motor == 1) ? _config_motor1.phase1_duration_ms : _config_motor2.phase1_duration_ms;
+                if (current_time - _phase_start_time >= phase1_duration) {
+                    // 抬腿完成，切换工作电机并开始压腿
                 _active_motor = (_lifting_motor == 1) ? 2 : 1; // 切换工作电机
                 _state = SPEED_FOLLOW_PHASE2;
                 _phase_start_time = current_time;
@@ -282,12 +292,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                                   _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
                 }
             }
+            }
             break;
 
         case SPEED_FOLLOW_PHASE2:
-            // 压腿阶段 - 0.6秒
-            if (current_time - _phase_start_time >= 600) {
-                // 压腿完成，进入空闲周期
+            // 压腿阶段 - 使用配置的持续时间
+            {
+                uint32_t phase2_duration = (_lifting_motor == 1) ? _config_motor1.phase2_duration_ms : _config_motor2.phase2_duration_ms;
+                if (current_time - _phase_start_time >= phase2_duration) {
+                    // 压腿完成，进入空闲周期
                 _state = SPEED_FOLLOW_IDLE;
                 _lifting_motor = 0;
                 _phase_start_time = current_time;
@@ -308,12 +321,16 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                                   _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
                 }
             }
+            }
             break;
 
         case SPEED_FOLLOW_IDLE:
-            // 空闲周期 - 150ms
-            if (current_time - _phase_start_time >= 150) {
-                // 空闲完成，进入对应的工作状态
+            // 空闲周期 - 使用配置的持续时间
+            {
+                // 根据即将工作的电机选择对应的空闲时间配置
+                uint32_t idle_duration = (_active_motor == 1) ? _config_motor1.idle_duration_ms : _config_motor2.idle_duration_ms;
+                if (current_time - _phase_start_time >= idle_duration) {
+                    // 空闲完成，进入对应的工作状态
                 if (_active_motor == 1) {
                     _state = SPEED_FOLLOW_MOTOR1_WORKING;
                 } else {
@@ -329,6 +346,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data) {
                           _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+            }
             break;
 
         default:

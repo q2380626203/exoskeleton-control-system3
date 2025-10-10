@@ -22,6 +22,8 @@ typedef struct {
     float trigger_speed;    // 触发速度阈值
     uint32_t phase1_duration_ms;  // 第一阶段持续时间
     uint32_t phase2_duration_ms;  // 第二阶段持续时间
+    uint32_t waiting_duration_ms; // 等待状态持续时间
+    uint32_t idle_duration_ms;    // 空闲状态持续时间
 
     // 第一阶段参数 (mode, pos, vel, torque, kp, kd)
     struct {
