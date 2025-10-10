@@ -261,7 +261,14 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
         printf("\n");
         return ESP_FAIL;
     } else {
-        ESP_LOGW(TAG_MOTOR, "接收超时 - 没有收到任何数据");
+        // 频率限制：每5秒最多打印一次超时警告
+        static uint32_t last_timeout_warning_time = 0;
+        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+        if (current_time - last_timeout_warning_time >= 5000) {
+            ESP_LOGW(TAG_MOTOR, "接收超时 - 没有收到任何数据 (未连接电机?)");
+            last_timeout_warning_time = current_time;
+        }
         return ESP_ERR_TIMEOUT;
     }
 }
