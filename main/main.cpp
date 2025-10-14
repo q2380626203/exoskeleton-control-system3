@@ -256,7 +256,6 @@ void motor_control_task(void *pvParameters) {
 
         esp_err_t err1 = motor_driver.sendRecv(control_cmd_1, motor_data_1);
         if (err1 == ESP_OK) {
-            speed_follow.update(motor_data_1);
             // 添加位置数据到缓存区
             uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
@@ -274,7 +273,6 @@ void motor_control_task(void *pvParameters) {
 
         esp_err_t err2 = motor_driver.sendRecv(control_cmd_2, motor_data_2);
         if (err2 == ESP_OK) {
-            speed_follow.update(motor_data_2);
             // 添加位置数据到缓存区
             uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
             position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
@@ -303,13 +301,28 @@ void motor_control_task(void *pvParameters) {
             float ch6_max = diff_buffer_get_ch6_max(&position_buffers);
             float ch7_max = diff_buffer_get_ch7_max(&position_buffers);
 
+            // 获取ch6和ch7经过滑动窗口平均滤波后的瞬时值
+            float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
+            float ch7_filtered = diff_buffer_get_ch7_filtered(&position_buffers, 100);
+
+            // 更新速度跟随模式的周期高频RMS计算
+            speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
+
+            // 获取周期高频RMS值作为输出
+            float ch6_new = speed_follow.getCh6RMS();
+            float ch7_new = speed_follow.getCh7RMS();
+
+            // 使用 ch6_max 和 ch7_max 更新速度跟随模式
+            speed_follow.update(motor_data_1, ch6_max, ch7_max);
+            speed_follow.update(motor_data_2, ch6_max, ch7_max);
+
             // 检查阈值并可能激活速度跟随模式
             speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
 
-            printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+            printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
                    motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
-                   ch6_max, ch7_max);
+                   ch6_max, ch7_max, ch6_new, ch7_new);
         }
 
         loop_count++;

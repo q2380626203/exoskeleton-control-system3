@@ -64,7 +64,7 @@ public:
     void init();
 
     // 更新电机数据，检测触发条件，并修改全局参数
-    void update(const MotorDataA1& motor_data);
+    void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max);
 
     // 设置全局参数的访问接口（兼容性，指向电机2）
     void setGlobalParams(uint8_t* motor_id, uint8_t* motor_mode, float* motor_pos,
@@ -107,6 +107,11 @@ public:
             manualDeactivate();
         }
     }
+
+    // 周期高频RMS计算接口
+    void updateCycleRMS(float ch6_filtered, float ch7_filtered);  // 更新周期RMS累加
+    float getCh6RMS() const { return _ch6_cycle_rms; }            // 获取ch6周期高频RMS值
+    float getCh7RMS() const { return _ch7_cycle_rms; }            // 获取ch7周期高频RMS值
 
 private:
     speed_follow_state_t _state;
@@ -151,11 +156,25 @@ private:
     // 差值缓存区指针（用于超时清空）
     motor_position_buffers_t* _diff_buffers;
 
+    // 周期高频RMS计算相关变量
+    float _ch6_sum;                    // ch6周期内累加和
+    float _ch7_sum;                    // ch7周期内累加和
+    float _ch6_sum_sq;                 // ch6周期内平方和
+    float _ch7_sum_sq;                 // ch7周期内平方和
+    uint32_t _rms_sample_count;        // 周期内样本数
+    float _ch6_cycle_rms;              // ch6周期高频RMS值（固定显示）
+    float _ch7_cycle_rms;              // ch7周期高频RMS值（固定显示）
+    speed_follow_state_t _last_state;  // 上一次的状态
+    bool _in_cycle;                    // 是否在运动周期中
+
     // 检测触发条件
     bool checkTriggerCondition(const MotorDataA1& motor_data);
 
     // 设置指定电机的全局参数
     void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
+
+    // 根据周期高频RMS值动态调整参数
+    void adjustParametersBasedOnThreshold();
 
 };
 

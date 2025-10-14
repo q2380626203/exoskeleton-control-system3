@@ -220,6 +220,24 @@ float diff_buffer_get_ch7_max(motor_position_buffers_t* buffers);
  */
 void diff_buffer_clear_all(motor_position_buffers_t* buffers);
 
+/**
+ * @brief 获取ch6缓存区经过滑动窗口平均滤波后的值
+ * @param buffers 电机位置缓存区管理结构指针
+ * @param window_size 滑动窗口大小（样本数），建议50-150
+ *                    窗口越大越平滑但响应越慢，窗口越小响应越快但噪声越大
+ * @return 滤波后的值，如果缓存区为空返回0.0f
+ */
+float diff_buffer_get_ch6_filtered(motor_position_buffers_t* buffers, uint32_t window_size);
+
+/**
+ * @brief 获取ch7缓存区经过滑动窗口平均滤波后的值
+ * @param buffers 电机位置缓存区管理结构指针
+ * @param window_size 滑动窗口大小（样本数），建议50-150
+ *                    窗口越大越平滑但响应越慢，窗口越小响应越快但噪声越大
+ * @return 滤波后的值，如果缓存区为空返回0.0f
+ */
+float diff_buffer_get_ch7_filtered(motor_position_buffers_t* buffers, uint32_t window_size);
+
 #ifdef __cplusplus
 }
 #endif

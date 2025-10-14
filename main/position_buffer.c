@@ -310,3 +310,37 @@ void diff_buffer_clear_all(motor_position_buffers_t* buffers) {
     buffers->ch7_buffer.is_full = false;
     memset(buffers->ch7_buffer.buffer, 0, sizeof(buffers->ch7_buffer.buffer));
 }
+
+// 差值缓存区获取滑动窗口平均滤波后的值
+static float diff_buffer_get_filtered(diff_buffer_t* buffer, uint32_t window_size) {
+    if (buffer == NULL || buffer->count == 0) return 0.0f;
+
+    // 滑动窗口平均滤波器
+    // 对最近的window_size个样本求平均，有效抑制随机噪声
+    // 如果缓存区样本数 < window_size，就用所有可用样本
+    uint32_t actual_window_size = (window_size > buffer->count) ? buffer->count : window_size;
+
+    if (actual_window_size > DIFF_BUFFER_SIZE) {
+        actual_window_size = DIFF_BUFFER_SIZE;
+    }
+
+    float sum = 0.0f;
+    // 从最新数据开始，向前取actual_window_size个样本
+    for (uint32_t i = 0; i < actual_window_size; i++) {
+        // 最新数据在head的前一个位置
+        uint32_t index = (buffer->head - 1 - i + DIFF_BUFFER_SIZE) % DIFF_BUFFER_SIZE;
+        sum += buffer->buffer[index].diff_value;
+    }
+
+    return sum / (float)actual_window_size;
+}
+
+float diff_buffer_get_ch6_filtered(motor_position_buffers_t* buffers, uint32_t window_size) {
+    if (buffers == NULL) return 0.0f;
+    return diff_buffer_get_filtered(&buffers->ch6_buffer, window_size);
+}
+
+float diff_buffer_get_ch7_filtered(motor_position_buffers_t* buffers, uint32_t window_size) {
+    if (buffers == NULL) return 0.0f;
+    return diff_buffer_get_filtered(&buffers->ch7_buffer, window_size);
+}

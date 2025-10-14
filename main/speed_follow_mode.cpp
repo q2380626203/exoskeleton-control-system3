@@ -1,6 +1,7 @@
 #include "speed_follow_mode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include <cmath>  // For std::sqrt
 
 static const char *TAG = "SpeedFollow";
 
@@ -13,24 +14,27 @@ SpeedFollowMode::SpeedFollowMode()
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
-      _global_mutex(nullptr), _diff_buffers(nullptr) {
+      _global_mutex(nullptr), _diff_buffers(nullptr),
+      _ch6_sum(0.0f), _ch7_sum(0.0f), _ch6_sum_sq(0.0f), _ch7_sum_sq(0.0f),
+      _rms_sample_count(0), _ch6_cycle_rms(0.0f), _ch7_cycle_rms(0.0f),
+      _last_state(SPEED_FOLLOW_IDLE), _in_cycle(false) {
 }
 
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
-    _config_motor1.trigger_speed = 0.75f;   // 触发速度：+0.75 rad/s (电机1)
-    _config_motor1.phase1_duration_ms = 400;
-    _config_motor1.phase2_duration_ms = 400;
-    _config_motor1.waiting_duration_ms = 300;  // 等待时间：300ms
-    _config_motor1.idle_duration_ms = 50;      // 空闲时间：50ms
+    _config_motor1.trigger_speed = 2.0f;   // 触发速度：+0.75 rad/s (电机1)
+    _config_motor1.phase1_duration_ms = 500;
+    _config_motor1.phase2_duration_ms = 350;
+    _config_motor1.waiting_duration_ms = 300;  // 等待时间
+    _config_motor1.idle_duration_ms = 200;      // 空闲时间
 
     // 电机1第一阶段参数：1 0.0 +15 +0.9 0.0 0.04
     _config_motor1.phase1.mode = 1;
     _config_motor1.phase1.pos = 0.0f;
-    _config_motor1.phase1.vel = 15.0f;
-    _config_motor1.phase1.torque = 0.9f;
+    _config_motor1.phase1.vel = 10.0f;
+    _config_motor1.phase1.torque = 1.0f;
     _config_motor1.phase1.kp = 0.0f;
-    _config_motor1.phase1.kd = 0.04f;
+    _config_motor1.phase1.kd = 0.05f;
 
     // 电机1第二阶段参数：1 0.0 -10 -0.5 0.0 0.03
     _config_motor1.phase2.mode = 1;
@@ -49,19 +53,19 @@ void SpeedFollowMode::init() {
     _config_motor1.idle.kd = 0.0f;
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
-    _config_motor2.trigger_speed = -0.75f;  // 触发速度：-0.75 rad/s (电机2)
-    _config_motor2.phase1_duration_ms = 400;
-    _config_motor2.phase2_duration_ms = 400;
+    _config_motor2.trigger_speed = -2.0f;  // 触发速度：-0.75 rad/s (电机2)
+    _config_motor2.phase1_duration_ms = 500;
+    _config_motor2.phase2_duration_ms = 350;
     _config_motor2.waiting_duration_ms = 300;  // 等待时间：300ms
-    _config_motor2.idle_duration_ms = 50;      // 空闲时间：50ms
+    _config_motor2.idle_duration_ms = 200;      // 空闲时间：50ms
 
     // 电机2第一阶段参数：1 0.0 -15 -0.9 0.0 0.04
     _config_motor2.phase1.mode = 1;
     _config_motor2.phase1.pos = 0.0f;
-    _config_motor2.phase1.vel = -15.0f;
-    _config_motor2.phase1.torque = -0.9f;
+    _config_motor2.phase1.vel = -10.0f;
+    _config_motor2.phase1.torque = -1.0f;
     _config_motor2.phase1.kp = 0.0f;
-    _config_motor2.phase1.kd = 0.04f;
+    _config_motor2.phase1.kd = 0.05f;
 
     // 电机2第二阶段参数：1 0.0 +10 +0.5 0.0 0.03
     _config_motor2.phase2.mode = 1;
@@ -136,13 +140,16 @@ void SpeedFollowMode::setDiffBuffers(motor_position_buffers_t* buffers) {
     _diff_buffers = buffers;
 }
 
-void SpeedFollowMode::update(const MotorDataA1& motor_data) {
+void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float ch7_max) {
     uint32_t current_time = esp_timer_get_time() / 1000; // 转换为毫秒
 
     // 如果未激活，跳过速度跟随逻辑
     if (!_is_active) {
         return;
     }
+
+    // 速度跟随模式开启时，根据周期高频RMS值调整参数
+    adjustParametersBasedOnThreshold();
 
     switch (_state) {
         case SPEED_FOLLOW_WAITING:
@@ -457,6 +464,120 @@ void SpeedFollowMode::manualDeactivate() {
         _waiting_start_time = 0;
         _working_start_time = 0;
         ESP_LOGI(TAG, "❌ 速度跟随模式已手动关闭");
+    }
+}
+
+void SpeedFollowMode::updateCycleRMS(float ch6_filtered, float ch7_filtered) {
+    // 检测周期开始（进入PHASE1）
+    if (_state == SPEED_FOLLOW_PHASE1 && _last_state != SPEED_FOLLOW_PHASE1) {
+        // 周期开始，重置累加变量
+        _ch6_sum = 0.0f;
+        _ch7_sum = 0.0f;
+        _ch6_sum_sq = 0.0f;
+        _ch7_sum_sq = 0.0f;
+        _rms_sample_count = 0;
+        _in_cycle = true;
+    }
+
+    // 在周期中累加滤波值和平方值（PHASE1、PHASE2、IDLE）
+    if (_in_cycle && (_state == SPEED_FOLLOW_PHASE1 ||
+                     _state == SPEED_FOLLOW_PHASE2 ||
+                     _state == SPEED_FOLLOW_IDLE)) {
+        _ch6_sum += ch6_filtered;
+        _ch7_sum += ch7_filtered;
+        _ch6_sum_sq += ch6_filtered * ch6_filtered;
+        _ch7_sum_sq += ch7_filtered * ch7_filtered;
+        _rms_sample_count++;
+    }
+
+    // 检测周期结束（离开IDLE进入WORKING或WAITING状态）
+    if (_in_cycle && _last_state == SPEED_FOLLOW_IDLE &&
+        (_state == SPEED_FOLLOW_MOTOR1_WORKING ||
+         _state == SPEED_FOLLOW_MOTOR2_WORKING ||
+         _state == SPEED_FOLLOW_WAITING)) {
+        // 周期结束，计算高频分量的RMS值
+        if (_rms_sample_count > 0) {
+            // 计算平均值（低频成分）
+            float ch6_mean = _ch6_sum / _rms_sample_count;
+            float ch7_mean = _ch7_sum / _rms_sample_count;
+
+            // 计算方差：Var(X) = E[X²] - E[X]²
+            float ch6_variance = (_ch6_sum_sq / _rms_sample_count) - (ch6_mean * ch6_mean);
+            float ch7_variance = (_ch7_sum_sq / _rms_sample_count) - (ch7_mean * ch7_mean);
+
+            // 方差可能为负（由于浮点精度），确保非负
+            if (ch6_variance < 0.0f) ch6_variance = 0.0f;
+            if (ch7_variance < 0.0f) ch7_variance = 0.0f;
+
+            // 标准差（高频分量的RMS）= sqrt(方差)
+            _ch6_cycle_rms = std::sqrt(ch6_variance);
+            _ch7_cycle_rms = std::sqrt(ch7_variance);
+        }
+        _in_cycle = false;
+    }
+
+    // 更新状态
+    _last_state = _state;
+}
+
+void SpeedFollowMode::adjustParametersBasedOnThreshold() {
+    // 取两个通道的RMS值中的最大值作为判断依据
+    float max_value = (_ch6_cycle_rms > _ch7_cycle_rms) ? _ch6_cycle_rms : _ch7_cycle_rms;
+
+    // 根据区间调整参数
+    if (max_value < 1.5f) {
+        // 区间1：小于6.5
+        // 电机1配置
+        _config_motor1.phase1_duration_ms = 350;
+        _config_motor1.phase2_duration_ms = 350;
+        _config_motor1.idle_duration_ms = 200;
+        _config_motor1.phase1.torque = 0.5f;
+        _config_motor1.phase2.torque = -0.5f;
+
+        // 电机2配置
+        _config_motor2.phase1_duration_ms = 350;
+        _config_motor2.phase2_duration_ms = 350;
+        _config_motor2.idle_duration_ms = 200;
+        _config_motor2.phase1.torque = -0.5f;
+        _config_motor2.phase2.torque = 0.5f;
+
+        //ESP_LOGI(TAG, "📊 参数调整: max_value=%.2f < 6.5, 时间=350/350/200ms, 力矩=±0.5", max_value);
+    }
+    else if (max_value <= 2.0f) {
+        // 区间2：6.5到7.5
+        // 电机1配置
+        _config_motor1.phase1_duration_ms = 400;
+        _config_motor1.phase2_duration_ms = 350;
+        _config_motor1.idle_duration_ms = 200;
+        _config_motor1.phase1.torque = 0.7f;
+        _config_motor1.phase2.torque = -0.7f;
+
+        // 电机2配置
+        _config_motor2.phase1_duration_ms = 400;
+        _config_motor2.phase2_duration_ms = 350;
+        _config_motor2.idle_duration_ms = 200;
+        _config_motor2.phase1.torque = -0.7f;
+        _config_motor2.phase2.torque = 0.7f;
+
+        //ESP_LOGI(TAG, "📊 参数调整: 6.5 <= max_value=%.2f <= 7.5, 时间=400/400/100ms, 力矩=±0.7", max_value);
+    }
+    else {
+        // 区间3：大于7.5
+        // 电机1配置
+        _config_motor1.phase1_duration_ms = 450;
+        _config_motor1.phase2_duration_ms = 350;
+        _config_motor1.idle_duration_ms = 200;
+        _config_motor1.phase1.torque = 1.0f;
+        _config_motor1.phase2.torque = -1.0f;
+
+        // 电机2配置
+        _config_motor2.phase1_duration_ms = 450;
+        _config_motor2.phase2_duration_ms = 350;
+        _config_motor2.idle_duration_ms = 200;
+        _config_motor2.phase1.torque = -1.0f;
+        _config_motor2.phase2.torque = 1.0f;
+
+        //ESP_LOGI(TAG, "📊 参数调整: max_value=%.2f > 7.5, 时间=450/450/50ms, 力矩=±1.0", max_value);
     }
 }
 
