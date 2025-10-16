@@ -132,6 +132,14 @@ private:
     uint8_t _triggered_channel;     // 触发的通道（6或7）
     uint32_t _waiting_start_time;   // 等待开始时间
 
+    // 速度捕获和动态参数
+    float _captured_velocity;       // 捕获的触发速度值
+    uint32_t _phase1_timeout_ms;    // PHASE1超时时间（默认500ms）
+    uint32_t _phase2_timeout_ms;    // PHASE2超时时间（默认350ms）
+    float _velocity_scale;          // 速度缩放因子（默认0.8）
+    float _phase2_vel_threshold;    // PHASE2完成速度阈值（默认0.5 rad/s）
+    bool _state_just_changed;       // 状态是否刚刚改变（用于避免重复设置参数）
+
 
     // 电机1全局参数指针
     uint8_t* _motor1_id;

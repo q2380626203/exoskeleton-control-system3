@@ -253,12 +253,12 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
     }
 
     if (total_bytes > 0) {
-        ESP_LOGW(TAG_MOTOR, "未找到有效帧头，接收了%d字节数据", total_bytes);
-        printf("原始数据: ");
-        for (int i = 0; i < total_bytes && i < 32; i++) {
-            printf("0x%02X ", temp_buffer[i]);
-        }
-        printf("\n");
+        // ESP_LOGW(TAG_MOTOR, "未找到有效帧头，接收了%d字节数据", total_bytes);
+        // printf("原始数据: ");
+        // for (int i = 0; i < total_bytes && i < 32; i++) {
+        //     printf("0x%02X ", temp_buffer[i]);
+        // }
+        // printf("\n");
         return ESP_FAIL;
     } else {
         // 频率限制：每5秒最多打印一次超时警告

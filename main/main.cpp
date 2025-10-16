@@ -312,12 +312,14 @@ void motor_control_task(void *pvParameters) {
             float ch6_new = speed_follow.getCh6RMS();
             float ch7_new = speed_follow.getCh7RMS();
 
+            // 检查阈值并可能激活速度跟随模式
+            speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
+
             // 使用 ch6_max 和 ch7_max 更新速度跟随模式
             speed_follow.update(motor_data_1, ch6_max, ch7_max);
             speed_follow.update(motor_data_2, ch6_max, ch7_max);
 
-            // 检查阈值并可能激活速度跟随模式
-            speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
+            
 
             printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
