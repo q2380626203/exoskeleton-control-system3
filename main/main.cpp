@@ -13,8 +13,13 @@
 #include "position_buffer.h"
 #include "driver/gpio.h"
 #include "wifi_webserver.h"
+#include "voice_module.h"
+#include "button_detector.h"
 
 static const char *TAG = "MAIN";
+
+// 语音模块实例（全局可见，供C和C++代码使用）
+extern "C" VoiceModule voice_module = {0};
 
 // Web服务器句柄
 static httpd_handle_t web_server = NULL;
@@ -52,7 +57,11 @@ SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
 // 速度跟随模式配置参数
 static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
 
-// Web服务器命令处理回调
+/**
+ * @brief Web服务器命令处理回调
+ * @param cmd 接收到的命令字符串 ("start" 或 "stop")
+ * @return ESP_OK 成功, ESP_FAIL 未知命令
+ */
 extern "C" esp_err_t handle_web_command(const char *cmd) {
     if (strcmp(cmd, "start") == 0) {
         ESP_LOGI(TAG, "[WEB] 接收到启动命令");
@@ -69,7 +78,12 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
     return ESP_FAIL;
 }
 
-// Web服务器参数设置回调
+/**
+ * @brief Web服务器参数设置回调
+ * @param param_name 参数名称 (如 "threshold")
+ * @param value 参数值
+ * @return ESP_OK 成功, ESP_FAIL 未知参数
+ */
 extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
     if (strcmp(param_name, "threshold") == 0) {
         ESP_LOGI(TAG, "[WEB] 设置阈值: %.2f", value);
@@ -82,7 +96,13 @@ extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
     return ESP_FAIL;
 }
 
-// Web服务器电机参数设置回调
+/**
+ * @brief Web服务器电机参数设置回调
+ * @param motor 电机编号 (1 或 2)
+ * @param param_name 参数名称 (如 "trigger_speed", "p1_vel" 等)
+ * @param value 参数值
+ * @return ESP_OK 成功, ESP_FAIL 未知参数
+ */
 extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, float value) {
     ESP_LOGI(TAG, "[WEB] 电机%d - %s: %.4f", motor, param_name, value);
 
@@ -138,7 +158,13 @@ extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, f
     return ESP_OK;
 }
 
-// Web服务器电机参数读取回调
+/**
+ * @brief Web服务器电机参数读取回调
+ * @param motor 电机编号 (1 或 2)
+ * @param param_name 参数名称
+ * @param value 输出参数，用于返回参数值
+ * @return ESP_OK 成功, ESP_FAIL 未知参数
+ */
 extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_name, float *value) {
     // 获取对应电机的配置
     speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
@@ -191,7 +217,16 @@ extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_nam
     return ESP_OK;
 }
 
-// 电机控制任务
+/**
+ * @brief 电机控制任务，以500Hz频率执行双电机同步控制
+ * @param pvParameters FreeRTOS任务参数（未使用）
+ * @details 执行流程：
+ *          1. 读取全局电机参数（互斥锁保护）
+ *          2. 向两个电机发送控制命令并接收反馈
+ *          3. 更新位置缓存区并进行波形分析
+ *          4. 调用速度跟随状态机 update()
+ *          5. 打印电机数据（10通道格式化输出）
+ */
 void motor_control_task(void *pvParameters) {
     if (!motor_driver.isInitialized()) {
         ESP_LOGE(TAG, "电机驱动未初始化！");
@@ -261,6 +296,7 @@ void motor_control_task(void *pvParameters) {
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
 
+        vTaskDelay(pdMS_TO_TICKS(1));
         // 控制电机2 - FOC模式，通过MIT参数控制
         MotorCmdA1 control_cmd_2;
         control_cmd_2.id = current_motor_2.motor_id;
@@ -302,15 +338,15 @@ void motor_control_task(void *pvParameters) {
             float ch7_max = diff_buffer_get_ch7_max(&position_buffers);
 
             // 获取ch6和ch7经过滑动窗口平均滤波后的瞬时值
-            float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
-            float ch7_filtered = diff_buffer_get_ch7_filtered(&position_buffers, 100);
+            //float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
+            //float ch7_filtered = diff_buffer_get_ch7_filtered(&position_buffers, 100);
 
             // 更新速度跟随模式的周期高频RMS计算
-            speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
+            //speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
 
             // 获取周期高频RMS值作为输出
-            float ch6_new = speed_follow.getCh6RMS();
-            float ch7_new = speed_follow.getCh7RMS();
+            float ch6_new = 1.0;
+            float ch7_new = 1.0;
 
             // 检查阈值并可能激活速度跟随模式
             speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
@@ -338,8 +374,24 @@ void motor_control_task(void *pvParameters) {
     }
 }
 
+/**
+ * @brief 应用程序主入口函数
+ * @details 初始化顺序：
+ *          1. 语音模块初始化
+ *          2. 创建电机参数互斥锁
+ *          3. WiFi热点初始化（AP模式）
+ *          4. Web服务器启动
+ *          5. 注册Web回调函数
+ *          6. 电机驱动初始化（UART2, 4Mbps）
+ *          7. 按键检测器初始化
+ *          8. 创建按键检测任务和电机控制任务
+ */
 extern "C" void app_main() {
     ESP_LOGI(TAG, "ESP32 Unitree 电机驱动示例启动");
+
+    // 初始化语音模块
+    voice_module_init(&voice_module);
+    voice_speak(&voice_module, "系统启动成功");
 
     // 为电机参数创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();
@@ -377,6 +429,14 @@ extern "C" void app_main() {
         ESP_LOGE(TAG, "电机驱动初始化失败！");
         return;
     }
+
+    // 初始化按键检测器
+    ESP_LOGI(TAG, "正在初始化按键检测器...");
+    button_detector_init();
+
+    // 创建按键检测任务
+    xTaskCreate(button_detector_task, "button_detector_task", 4096, NULL, 4, NULL);
+    ESP_LOGI(TAG, "按键检测任务已创建");
 
     // 创建电机控制任务
     xTaskCreate(motor_control_task, "motor_control_task", 4096, NULL, 5, NULL);

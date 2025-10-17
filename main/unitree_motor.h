@@ -2,9 +2,9 @@
 #define UNITREE_MOTOR_H
 
 #include "driver/uart.h"
-#include "driver/gpio.h" // For GPIO control
+#include "driver/gpio.h"
 #include "esp_err.h"
-#include "motor_commands.h" // 包含电机指令和反馈结构体
+#include "motor_commands.h"
 
 class UnitreeMotorDriver {
 public:
@@ -36,30 +36,10 @@ public:
      */
     bool isInitialized() const { return _is_initialized; }
 
-    /**
-     * @brief 打印电机状态信息
-     * @param data 电机反馈数据结构体
-     * @param cmd 电机控制命令结构体
-     * @param count 统计计数
-     */
-    static void printMotorStatus(const MotorDataA1& data, const MotorCmdA1& cmd, uint32_t count);
-
-    // test_rs485模式：使用同步通信，不需要异步接收任务
-
-    /**
-     * @brief 将字节数组解包成 MotorDataGO_M8010_6 并转换为 MotorDataA1 结构体
-     * @param buffer 输入字节缓冲区
-     * @param data 输出反馈数据 (MotorDataA1 格式)
-     * @return true 成功, false 失败 (例如CRC校验失败)
-     */
-    bool unpack_motor_data_go_m8010_6(const uint8_t* buffer, MotorDataA1& data);
-
-public:  // 纯串口模式：移除队列相关成员
-    uart_port_t _uart_num;
-    gpio_num_t _max485_re_de_pin; // 保留变量但不使用（外部RS485自动控制）
-    bool _is_initialized;
-
 private:
+    uart_port_t _uart_num;
+    gpio_num_t _max485_re_de_pin;
+    bool _is_initialized;
 
     /**
      * @brief 将 MotorCmdA1 结构体转换为 MotorCmdGO_M8010_6 并打包成字节数组
@@ -68,6 +48,14 @@ private:
      * @return 打包后的数据长度
      */
     size_t pack_motor_cmd_go_m8010_6(const MotorCmdA1& cmd, uint8_t* buffer);
+
+    /**
+     * @brief 将字节数组解包成 MotorDataGO_M8010_6 并转换为 MotorDataA1 结构体
+     * @param buffer 输入字节缓冲区
+     * @param data 输出反馈数据 (MotorDataA1 格式)
+     * @return true 成功, false 失败 (例如CRC校验失败)
+     */
+    bool unpack_motor_data_go_m8010_6(const uint8_t* buffer, MotorDataA1& data);
 };
 
 #endif // UNITREE_MOTOR_H

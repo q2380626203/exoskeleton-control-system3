@@ -63,15 +63,6 @@ typedef struct {
 void position_buffer_init(motor_position_buffers_t* buffers);
 
 /**
- * @brief 向指定电机缓存区添加位置数据
- * @param buffer 目标缓存区指针
- * @param position 位置值
- * @param timestamp 时间戳
- * @return true 成功，false 失败
- */
-bool position_buffer_add(position_buffer_t* buffer, float position, uint32_t timestamp);
-
-/**
  * @brief 向1号电机缓存区添加位置数据
  * @param buffers 电机位置缓存区管理结构指针
  * @param position 位置值
@@ -88,44 +79,6 @@ bool position_buffer_add_motor1(motor_position_buffers_t* buffers, float positio
  * @return true 成功，false 失败
  */
 bool position_buffer_add_motor2(motor_position_buffers_t* buffers, float position, uint32_t timestamp);
-
-/**
- * @brief 从缓存区获取最新的位置数据
- * @param buffer 目标缓存区指针
- * @param data 输出数据指针
- * @return true 成功，false 缓存区为空
- */
-bool position_buffer_get_latest(position_buffer_t* buffer, position_data_t* data);
-
-/**
- * @brief 从缓存区获取指定索引的历史数据
- * @param buffer 目标缓存区指针
- * @param index 索引（0为最新，1为前一个，以此类推）
- * @param data 输出数据指针
- * @return true 成功，false 索引超出范围
- */
-bool position_buffer_get_history(position_buffer_t* buffer, uint32_t index, position_data_t* data);
-
-/**
- * @brief 获取缓存区中的数据数量
- * @param buffer 目标缓存区指针
- * @return 数据数量
- */
-uint32_t position_buffer_get_count(position_buffer_t* buffer);
-
-/**
- * @brief 检查缓存区是否为空
- * @param buffer 目标缓存区指针
- * @return true 为空，false 不为空
- */
-bool position_buffer_is_empty(position_buffer_t* buffer);
-
-/**
- * @brief 检查缓存区是否已满
- * @param buffer 目标缓存区指针
- * @return true 已满，false 未满
- */
-bool position_buffer_is_full(position_buffer_t* buffer);
 
 /**
  * @brief 清空缓存区
@@ -157,14 +110,6 @@ typedef struct {
     uint32_t peak_index;    // 波峰在缓存区中的索引
     uint32_t valley_index;  // 波谷在缓存区中的索引
 } wave_analysis_result_t;
-
-/**
- * @brief 分析缓存区中最新的一个波峰波谷
- * @param buffer 目标缓存区指针
- * @param result 分析结果输出
- * @return true 分析成功，false 数据不足或分析失败
- */
-bool position_buffer_analyze_latest_wave(position_buffer_t* buffer, wave_analysis_result_t* result);
 
 /**
  * @brief 分析1号电机最新的一个波峰波谷
@@ -219,24 +164,6 @@ float diff_buffer_get_ch7_max(motor_position_buffers_t* buffers);
  * @param buffers 电机位置缓存区管理结构指针
  */
 void diff_buffer_clear_all(motor_position_buffers_t* buffers);
-
-/**
- * @brief 获取ch6缓存区经过滑动窗口平均滤波后的值
- * @param buffers 电机位置缓存区管理结构指针
- * @param window_size 滑动窗口大小（样本数），建议50-150
- *                    窗口越大越平滑但响应越慢，窗口越小响应越快但噪声越大
- * @return 滤波后的值，如果缓存区为空返回0.0f
- */
-float diff_buffer_get_ch6_filtered(motor_position_buffers_t* buffers, uint32_t window_size);
-
-/**
- * @brief 获取ch7缓存区经过滑动窗口平均滤波后的值
- * @param buffers 电机位置缓存区管理结构指针
- * @param window_size 滑动窗口大小（样本数），建议50-150
- *                    窗口越大越平滑但响应越慢，窗口越小响应越快但噪声越大
- * @return 滤波后的值，如果缓存区为空返回0.0f
- */
-float diff_buffer_get_ch7_filtered(motor_position_buffers_t* buffers, uint32_t window_size);
 
 #ifdef __cplusplus
 }

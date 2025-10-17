@@ -11,6 +11,7 @@
 typedef enum {
     SPEED_FOLLOW_IDLE,              // 空闲周期（300ms）
     SPEED_FOLLOW_WAITING,           // 等待状态：阈值触发后等待300ms检测另一电机速度
+    SPEED_FOLLOW_BUTTON_WAITING,    // 按键触发等待状态：同时检测两个电机速度，谁先触发就进入谁的工作状态
     SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
     SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
     SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
@@ -57,19 +58,15 @@ typedef struct {
 } speed_follow_config_t;
 
 class SpeedFollowMode {
+private:
+    // 内部使用的私有函数
+    void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
+
 public:
     SpeedFollowMode();
 
     // 初始化速度跟随模式
     void init();
-
-    // 更新电机数据，检测触发条件，并修改全局参数
-    void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max);
-
-    // 设置全局参数的访问接口（兼容性，指向电机2）
-    void setGlobalParams(uint8_t* motor_id, uint8_t* motor_mode, float* motor_pos,
-                        float* motor_vel, float* motor_t, float* motor_kp, float* motor_kd,
-                        SemaphoreHandle_t mutex);
 
     // 设置双电机参数的访问接口
     void setDualMotorParams(uint8_t* motor1_id, uint8_t* motor1_mode, float* motor1_pos, float* motor1_vel,
@@ -78,21 +75,19 @@ public:
                            float* motor2_t, float* motor2_kp, float* motor2_kd,
                            SemaphoreHandle_t mutex);
 
-    // 获取当前状态
-    speed_follow_state_t getState() const { return _state; }
+    // 设置差值缓存区指针（用于超时清空）
+    void setDiffBuffers(motor_position_buffers_t* buffers);
 
     // 自动开关控制函数
     void enableAutoSwitch(bool enable = true);                    // 启用/禁用自动开关
     void setThreshold(float threshold);                           // 设置触发阈值
     void checkThresholdAndActivate(float ch6_max, float ch7_max); // 检查阈值并激活
-    void manualDeactivate();                                      // 手动关闭
-    bool isActive() const { return _is_active; }                  // 获取激活状态
 
-    // 设置差值缓存区指针（用于超时清空）
-    void setDiffBuffers(motor_position_buffers_t* buffers);
+    // 更新电机数据，检测触发条件，并修改全局参数
+    void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max);
 
-    // 重置状态
-    void reset();
+    // 按键触发进入按键等待状态
+    void startButtonWaiting();
 
     // Web接口：获取电机配置
     speed_follow_config_t* getMotorConfig(int motor) {
@@ -101,17 +96,20 @@ public:
 
     // Web接口：启用/禁用速度跟随
     void enable(bool enabled) {
-        if (enabled) {
-            _is_active = true;
-        } else {
-            manualDeactivate();
-        }
+        _is_active = enabled;
     }
 
-    // 周期高频RMS计算接口
-    void updateCycleRMS(float ch6_filtered, float ch7_filtered);  // 更新周期RMS累加
-    float getCh6RMS() const { return _ch6_cycle_rms; }            // 获取ch6周期高频RMS值
-    float getCh7RMS() const { return _ch7_cycle_rms; }            // 获取ch7周期高频RMS值
+    // 检查是否处于静止状态（用于按键触发语音播放）
+    bool isStationary() const { return _is_stationary; }
+
+    // 检查是否缓存区触发激活（用于播放助力开启语音）
+    bool isBufferTriggered() const { return _is_buffer_triggered; }
+
+    // 清除静止标志（按键检测任务调用）
+    void clearStationaryFlag() { _is_stationary = false; }
+
+    // 清除缓存区触发标志（按键检测任务调用）
+    void clearBufferTriggeredFlag() { _is_buffer_triggered = false; }
 
 private:
     speed_follow_state_t _state;
@@ -127,6 +125,9 @@ private:
     // 自动开关控制
     bool _auto_switch_enabled;      // 自动开关是否启用
     bool _is_active;                // 速度跟随是否激活
+    bool _is_stationary;            // 是否处于静止状态（用于按键触发语音播放）
+    bool _is_button_triggered;      // 是否为按键触发模式
+    bool _is_buffer_triggered;      // 是否为缓存区触发激活（用于播放助力开启语音）
     float _threshold_value;         // 触发阈值（默认10.0）
     bool _first_trigger_detected;   // 是否已检测到首次触发
     uint8_t _triggered_channel;     // 触发的通道（6或7）
@@ -138,8 +139,6 @@ private:
     uint32_t _phase2_timeout_ms;    // PHASE2超时时间（默认350ms）
     float _velocity_scale;          // 速度缩放因子（默认0.8）
     float _phase2_vel_threshold;    // PHASE2完成速度阈值（默认0.5 rad/s）
-    bool _state_just_changed;       // 状态是否刚刚改变（用于避免重复设置参数）
-
 
     // 电机1全局参数指针
     uint8_t* _motor1_id;
@@ -163,27 +162,6 @@ private:
 
     // 差值缓存区指针（用于超时清空）
     motor_position_buffers_t* _diff_buffers;
-
-    // 周期高频RMS计算相关变量
-    float _ch6_sum;                    // ch6周期内累加和
-    float _ch7_sum;                    // ch7周期内累加和
-    float _ch6_sum_sq;                 // ch6周期内平方和
-    float _ch7_sum_sq;                 // ch7周期内平方和
-    uint32_t _rms_sample_count;        // 周期内样本数
-    float _ch6_cycle_rms;              // ch6周期高频RMS值（固定显示）
-    float _ch7_cycle_rms;              // ch7周期高频RMS值（固定显示）
-    speed_follow_state_t _last_state;  // 上一次的状态
-    bool _in_cycle;                    // 是否在运动周期中
-
-    // 检测触发条件
-    bool checkTriggerCondition(const MotorDataA1& motor_data);
-
-    // 设置指定电机的全局参数
-    void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
-
-    // 根据周期高频RMS值动态调整参数
-    void adjustParametersBasedOnThreshold();
-
 };
 
 #endif // SPEED_FOLLOW_MODE_H

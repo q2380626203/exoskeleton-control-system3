@@ -1,27 +1,92 @@
 #include "speed_follow_mode.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include <cmath>  // For std::sqrt
 
 static const char *TAG = "SpeedFollow";
 
+// ============================================================================
+// 构造函数
+// ============================================================================
+
+/**
+ * @brief 速度跟随模式构造函数
+ *
+ * 初始化所有成员变量为默认值：
+ * - 状态机初始状态为 IDLE
+ * - 电机指针初始化为 nullptr
+ * - 触发参数设置为默认值
+ */
 SpeedFollowMode::SpeedFollowMode()
     : _state(SPEED_FOLLOW_IDLE), _phase_start_time(0),
       _active_motor(1), _lifting_motor(0), _working_start_time(0),
-      _auto_switch_enabled(false), _is_active(false), _threshold_value(10.0f), _first_trigger_detected(false),
+      _auto_switch_enabled(false), _is_active(false), _is_stationary(false), _is_button_triggered(false), _is_buffer_triggered(false),
+      _threshold_value(10.0f), _first_trigger_detected(false),
       _triggered_channel(0), _waiting_start_time(0),
       _captured_velocity(0.0f), _phase1_timeout_ms(500), _phase2_timeout_ms(350), _velocity_scale(0.8f), _phase2_vel_threshold(0.5f),
-      _state_just_changed(false),
       _motor1_id(nullptr), _motor1_mode(nullptr), _motor1_pos(nullptr),
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
-      _global_mutex(nullptr), _diff_buffers(nullptr),
-      _ch6_sum(0.0f), _ch7_sum(0.0f), _ch6_sum_sq(0.0f), _ch7_sum_sq(0.0f),
-      _rms_sample_count(0), _ch6_cycle_rms(0.0f), _ch7_cycle_rms(0.0f),
-      _last_state(SPEED_FOLLOW_IDLE), _in_cycle(false) {
+      _global_mutex(nullptr), _diff_buffers(nullptr) {
 }
 
+// ============================================================================
+// 私有成员函数 (内部使用)
+// ============================================================================
+
+/**
+ * @brief 设置指定电机的控制参数
+ * @param motor_id 电机ID（1 或 2）
+ * @param mode 控制模式（0=停止, 1=伺服, 10=电流）
+ * @param pos 目标位置（弧度）
+ * @param vel 目标速度（rad/s）
+ * @param torque 前馈力矩（N·m）
+ * @param kp 位置增益
+ * @param kd 速度增益
+ *
+ * @note 使用互斥锁保护全局电机参数的修改
+ * @note 只有在对应电机的指针有效时才会更新参数
+ */
+void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd) {
+    if (_global_mutex) {
+        if (xSemaphoreTake(_global_mutex, portMAX_DELAY) == pdTRUE) {
+            if (motor_id == 1 && _motor1_mode && _motor1_pos && _motor1_vel && _motor1_t && _motor1_kp && _motor1_kd) {
+                *_motor1_mode = mode;
+                *_motor1_pos = pos;
+                *_motor1_vel = vel;
+                *_motor1_t = torque;
+                *_motor1_kp = kp;
+                *_motor1_kd = kd;
+            } else if (motor_id == 2 && _motor2_mode && _motor2_pos && _motor2_vel && _motor2_t && _motor2_kp && _motor2_kd) {
+                *_motor2_mode = mode;
+                *_motor2_pos = pos;
+                *_motor2_vel = vel;
+                *_motor2_t = torque;
+                *_motor2_kp = kp;
+                *_motor2_kd = kd;
+            }
+            xSemaphoreGive(_global_mutex);
+        }
+    }
+}
+
+// ============================================================================
+// 公共成员函数 (外部使用)
+// ============================================================================
+
+/**
+ * @brief 初始化速度跟随模式配置
+ *
+ * 配置双电机速度跟随模式的所有参数，包括：
+ * - 电机1/2的触发速度阈值
+ * - PHASE1（抬腿）和PHASE2（压腿）的时间参数
+ * - 各阶段的电机控制参数（mode, pos, vel, torque, kp, kd）
+ * - 动态调整参数（超时时间、速度缩放因子等）
+ *
+ * @note 电机1触发条件：速度 > +2.0 rad/s
+ * @note 电机2触发条件：速度 < -2.0 rad/s
+ * @note ch6触发→检测2号电机，ch7触发→检测1号电机
+ */
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
     _config_motor1.trigger_speed = 2.0f;   // 触发速度：+0.75 rad/s (电机1)
@@ -106,20 +171,26 @@ void SpeedFollowMode::init() {
              _phase1_timeout_ms, _phase2_timeout_ms, _velocity_scale, _phase2_vel_threshold);
 }
 
-void SpeedFollowMode::setGlobalParams(uint8_t* motor_id, uint8_t* motor_mode, float* motor_pos,
-                                     float* motor_vel, float* motor_t, float* motor_kp, float* motor_kd,
-                                     SemaphoreHandle_t mutex) {
-    // 兼容性函数，指向电机2参数
-    _motor2_id = motor_id;
-    _motor2_mode = motor_mode;
-    _motor2_pos = motor_pos;
-    _motor2_vel = motor_vel;
-    _motor2_t = motor_t;
-    _motor2_kp = motor_kp;
-    _motor2_kd = motor_kd;
-    _global_mutex = mutex;
-}
-
+/**
+ * @brief 设置双电机控制参数的指针引用
+ * @param motor1_id 电机1的ID指针
+ * @param motor1_mode 电机1的控制模式指针
+ * @param motor1_pos 电机1的目标位置指针
+ * @param motor1_vel 电机1的目标速度指针
+ * @param motor1_t 电机1的前馈力矩指针
+ * @param motor1_kp 电机1的位置增益指针
+ * @param motor1_kd 电机1的速度增益指针
+ * @param motor2_id 电机2的ID指针
+ * @param motor2_mode 电机2的控制模式指针
+ * @param motor2_pos 电机2的目标位置指针
+ * @param motor2_vel 电机2的目标速度指针
+ * @param motor2_t 电机2的前馈力矩指针
+ * @param motor2_kp 电机2的位置增益指针
+ * @param motor2_kd 电机2的速度增益指针
+ * @param mutex 保护全局电机参数的互斥锁句柄
+ *
+ * @note 这些指针指向全局电机参数，修改时需要使用互斥锁保护
+ */
 void SpeedFollowMode::setDualMotorParams(uint8_t* motor1_id, uint8_t* motor1_mode, float* motor1_pos, float* motor1_vel,
                                          float* motor1_t, float* motor1_kp, float* motor1_kd,
                                          uint8_t* motor2_id, uint8_t* motor2_mode, float* motor2_pos, float* motor2_vel,
@@ -146,10 +217,115 @@ void SpeedFollowMode::setDualMotorParams(uint8_t* motor1_id, uint8_t* motor1_mod
     _global_mutex = mutex;
 }
 
+/**
+ * @brief 设置位置差值缓存区指针
+ * @param buffers 指向电机位置缓存区结构的指针
+ *
+ * @note 用于访问ch6/ch7差值数据，触发速度跟随模式
+ */
 void SpeedFollowMode::setDiffBuffers(motor_position_buffers_t* buffers) {
     _diff_buffers = buffers;
 }
 
+/**
+ * @brief 启用或禁用自动触发开关
+ * @param enable true=启用自动触发，false=禁用自动触发
+ *
+ * @note 启用后，当ch6/ch7差值超过阈值时会自动进入速度跟随模式
+ * @note 禁用时会清除激活状态和首次触发标志
+ */
+void SpeedFollowMode::enableAutoSwitch(bool enable) {
+    _auto_switch_enabled = enable;
+    if (enable) {
+        ESP_LOGI(TAG, "自动开关已启用，阈值: %.1f", _threshold_value);
+    } else {
+        ESP_LOGI(TAG, "自动开关已禁用");
+        _is_active = false;
+        _first_trigger_detected = false;
+    }
+}
+
+/**
+ * @brief 设置自动触发阈值
+ * @param threshold ch6/ch7差值的触发阈值
+ *
+ * @note 当ch6_max或ch7_max超过该阈值时，会触发速度跟随模式
+ */
+void SpeedFollowMode::setThreshold(float threshold) {
+    _threshold_value = threshold;
+    ESP_LOGI(TAG, "触发阈值设置为: %.1f", _threshold_value);
+}
+
+/**
+ * @brief 检查ch6/ch7差值是否超过阈值并激活速度跟随模式
+ * @param ch6_max ch6通道的最大差值
+ * @param ch7_max ch7通道的最大差值
+ *
+ * 触发逻辑：
+ * - ch6触发 → 等待300ms → 检测2号电机-v
+ * - ch7触发 → 等待300ms → 检测1号电机+v
+ * - 双通道触发时选择数值更大的一方
+ *
+ * @note 只有在自动开关启用且未激活时才会检查
+ * @note 触发后进入WAITING状态，等待对应电机速度触发
+ */
+void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
+    if (!_auto_switch_enabled || _is_active) {
+        return; // 自动开关未启用或已经激活
+    }
+
+    // 检查是否有任一通道超过阈值
+    bool ch6_triggered = ch6_max > _threshold_value;
+    bool ch7_triggered = ch7_max > _threshold_value;
+
+    if (ch6_triggered || ch7_triggered) {
+        if (!_first_trigger_detected) {
+            // 首次触发，进入等待状态
+            if (ch6_triggered && ch7_triggered) {
+                // 两者都触发，选择数值更大的一方
+                _triggered_channel = (ch6_max > ch7_max) ? 6 : 7;
+                ESP_LOGI(TAG, "🚀 双通道触发！选择ch%d (ch6=%.1f, ch7=%.1f)，等待300ms检测对应电机",
+                         _triggered_channel, ch6_max, ch7_max);
+            } else if (ch6_triggered) {
+                _triggered_channel = 6;
+                ESP_LOGI(TAG, "🚀 ch6触发(%.1f)！等待300ms检测2号电机-v", ch6_max);
+            } else {
+                _triggered_channel = 7;
+                ESP_LOGI(TAG, "🚀 ch7触发(%.1f)！等待300ms检测1号电机+v", ch7_max);
+            }
+
+            _first_trigger_detected = true;
+        }
+
+        // 激活速度跟随模式，进入等待状态
+        _is_active = true;
+        _is_buffer_triggered = true;  // 设置缓存区触发标志
+        _state = SPEED_FOLLOW_WAITING;
+        _waiting_start_time = esp_timer_get_time() / 1000;
+
+        ESP_LOGI(TAG, "✅ 进入等待状态，300ms后检测%s电机速度",
+                 _triggered_channel == 6 ? "2号" : "1号");
+    }
+}
+
+/**
+ * @brief 速度跟随状态机更新函数（每个控制周期调用两次）
+ * @param motor_data 当前电机的反馈数据（包含id, vel等）
+ * @param ch6_max ch6通道的最大差值（用于WAITING状态检查）
+ * @param ch7_max ch7通道的最大差值（用于WAITING状态检查）
+ *
+ * 状态机流程：
+ * 1. BUTTON_WAITING：按键触发等待，检测任意电机速度触发
+ * 2. WAITING：ch6/ch7触发等待（300ms），检测对应电机速度
+ * 3. MOTOR1_WORKING/MOTOR2_WORKING：检测对应电机速度触发（超时1.2s/4s）
+ * 4. PHASE1：抬腿阶段，动态速度跟随（超时500ms或速度反转）
+ * 5. PHASE2：压腿阶段，动态速度跟随（超时350ms或速度回零）
+ * 6. IDLE：空闲周期（100ms），然后切换到下一个工作电机
+ *
+ * @note 此函数在motor_control_task中被调用两次（motor_data_1和motor_data_2）
+ * @note 必须检查motor_data.id来判断当前处理的是哪个电机的数据
+ * @note PHASE1/PHASE2使用实时速度*0.8动态更新电机参数
+ */
 void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float ch7_max) {
     uint32_t current_time = esp_timer_get_time() / 1000; // 转换为毫秒
 
@@ -158,10 +334,42 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
         return;
     }
 
-    // 速度跟随模式开启时，根据周期高频RMS值调整参数
-    //adjustParametersBasedOnThreshold();
-
     switch (_state) {
+        case SPEED_FOLLOW_BUTTON_WAITING:
+            // 按键触发等待状态：同时检测两个电机的速度，谁先触发就进入谁的PHASE1
+            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+
+            // 检测电机1速度触发
+            if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
+                _captured_velocity = motor_data.vel;
+                _state = SPEED_FOLLOW_PHASE1;
+                _lifting_motor = 1;
+                _active_motor = 2; // 下个周期2号工作
+                _phase_start_time = current_time;
+                ESP_LOGI(TAG, "🎯 按键模式：1号电机速度触发(+v=%.3f)，开始抬腿", motor_data.vel);
+
+                float scaled_vel = _captured_velocity * _velocity_scale;
+                setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                              _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+            }
+            // 检测电机2速度触发
+            else if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
+                _captured_velocity = motor_data.vel;
+                _state = SPEED_FOLLOW_PHASE1;
+                _lifting_motor = 2;
+                _active_motor = 1; // 下个周期1号工作
+                _phase_start_time = current_time;
+                ESP_LOGI(TAG, "🎯 按键模式：2号电机速度触发(-v=%.3f)，开始抬腿", motor_data.vel);
+
+                float scaled_vel = _captured_velocity * _velocity_scale;
+                setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                              _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+            }
+            break;
+
         case SPEED_FOLLOW_WAITING:
             // 等待状态：等待配置时间后检测对应电机速度
             setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
@@ -222,22 +430,33 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-            // 检测超时（1.2秒未触发）
-            if (current_time - _working_start_time >= 1200) {
-                ESP_LOGW(TAG, "⏱️ 1号电机工作超时1.2s未检测到速度触发，关闭速度跟随模式");
-                _is_active = false;
-                _state = SPEED_FOLLOW_IDLE;
-                _first_trigger_detected = false;
-                _triggered_channel = 0;
-                _working_start_time = 0;
-                // 清空所有缓存区
-                if (_diff_buffers) {
-                    diff_buffer_clear_all(_diff_buffers);
-                    position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
-                    position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
-                    ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+            // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
+            {
+                uint32_t timeout_ms = _is_button_triggered ? 4000 : 1200;
+
+                // 检测超时
+                if (current_time - _working_start_time >= timeout_ms) {
+                    if (_is_button_triggered) {
+                        ESP_LOGW(TAG, "⏱️ 1号电机工作超时4s未检测到速度触发，进入静止状态");
+                        _is_button_triggered = false; // 清除按键触发标志
+                    } else {
+                        ESP_LOGW(TAG, "⏱️ 1号电机工作超时1.2s未检测到速度触发，进入静止状态");
+                    }
+                    _is_stationary = true; // 设置静止标志（按键和缓存区触发都会触发语音）
+                    _is_active = false;
+                    _state = SPEED_FOLLOW_IDLE;
+                    _first_trigger_detected = false;
+                    _triggered_channel = 0;
+                    _working_start_time = 0;
+                    // 清空所有缓存区
+                    if (_diff_buffers) {
+                        diff_buffer_clear_all(_diff_buffers);
+                        position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
+                        position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
+                        ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                    }
+                    break;
                 }
-                break;
             }
 
             // 立即检测速度触发条件
@@ -265,22 +484,33 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-            // 检测超时（1.2秒未触发）
-            if (current_time - _working_start_time >= 1200) {
-                ESP_LOGW(TAG, "⏱️ 2号电机工作超时1.2s未检测到速度触发，关闭速度跟随模式");
-                _is_active = false;
-                _state = SPEED_FOLLOW_IDLE;
-                _first_trigger_detected = false;
-                _triggered_channel = 0;
-                _working_start_time = 0;
-                // 清空所有缓存区
-                if (_diff_buffers) {
-                    diff_buffer_clear_all(_diff_buffers);
-                    position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
-                    position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
-                    ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+            // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
+            {
+                uint32_t timeout_ms = _is_button_triggered ? 4000 : 1200;
+
+                // 检测超时
+                if (current_time - _working_start_time >= timeout_ms) {
+                    if (_is_button_triggered) {
+                        ESP_LOGW(TAG, "⏱️ 2号电机工作超时4s未检测到速度触发，进入静止状态");
+                        _is_button_triggered = false; // 清除按键触发标志
+                    } else {
+                        ESP_LOGW(TAG, "⏱️ 2号电机工作超时1.2s未检测到速度触发，进入静止状态");
+                    }
+                    _is_stationary = true; // 设置静止标志（按键和缓存区触发都会触发语音）
+                    _is_active = false;
+                    _state = SPEED_FOLLOW_IDLE;
+                    _first_trigger_detected = false;
+                    _triggered_channel = 0;
+                    _working_start_time = 0;
+                    // 清空所有缓存区
+                    if (_diff_buffers) {
+                        diff_buffer_clear_all(_diff_buffers);
+                        position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
+                        position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
+                        ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                    }
+                    break;
                 }
-                break;
             }
 
             // 立即检测速度触发条件
@@ -451,223 +681,21 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
     }
 }
 
-bool SpeedFollowMode::checkTriggerCondition(const MotorDataA1& motor_data) {
-    // 新逻辑中，触发检测已集成在update函数中
-    // 保留此函数以维持接口兼容性
-    return false;
+/**
+ * @brief 按键触发启动速度跟随模式
+ *
+ * 设置状态为BUTTON_WAITING，同时检测两个电机的速度：
+ * - 1号电机速度 > +2.0 rad/s → 触发1号抬腿
+ * - 2号电机速度 < -2.0 rad/s → 触发2号抬腿
+ *
+ * @note 按键模式超时时间为4秒（vs ch6/ch7触发的1.2秒）
+ * @note 设置_is_button_triggered标志，用于区分按键和缓存区触发
+ */
+void SpeedFollowMode::startButtonWaiting() {
+    // 按键触发进入按键等待状态
+    _is_active = true;
+    _is_button_triggered = true;
+    _is_stationary = false;
+    _state = SPEED_FOLLOW_BUTTON_WAITING;
+    ESP_LOGI(TAG, "🔘 按键触发：进入BUTTON_WAITING状态，同时检测两个电机速度");
 }
-
-void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd) {
-    if (_global_mutex) {
-        if (xSemaphoreTake(_global_mutex, portMAX_DELAY) == pdTRUE) {
-            if (motor_id == 1 && _motor1_mode && _motor1_pos && _motor1_vel && _motor1_t && _motor1_kp && _motor1_kd) {
-                *_motor1_mode = mode;
-                *_motor1_pos = pos;
-                *_motor1_vel = vel;
-                *_motor1_t = torque;
-                *_motor1_kp = kp;
-                *_motor1_kd = kd;
-            } else if (motor_id == 2 && _motor2_mode && _motor2_pos && _motor2_vel && _motor2_t && _motor2_kp && _motor2_kd) {
-                *_motor2_mode = mode;
-                *_motor2_pos = pos;
-                *_motor2_vel = vel;
-                *_motor2_t = torque;
-                *_motor2_kp = kp;
-                *_motor2_kd = kd;
-            }
-            xSemaphoreGive(_global_mutex);
-        }
-    }
-}
-
-void SpeedFollowMode::reset() {
-    _state = SPEED_FOLLOW_IDLE;
-    _phase_start_time = 0;
-    _is_active = false;
-    _first_trigger_detected = false;
-    _triggered_channel = 0;
-    _waiting_start_time = 0;
-    _working_start_time = 0;
-    ESP_LOGI(TAG, "速度跟随模式已重置");
-}
-
-void SpeedFollowMode::enableAutoSwitch(bool enable) {
-    _auto_switch_enabled = enable;
-    if (enable) {
-        ESP_LOGI(TAG, "自动开关已启用，阈值: %.1f", _threshold_value);
-    } else {
-        ESP_LOGI(TAG, "自动开关已禁用");
-        _is_active = false;
-        _first_trigger_detected = false;
-    }
-}
-
-void SpeedFollowMode::setThreshold(float threshold) {
-    _threshold_value = threshold;
-    ESP_LOGI(TAG, "触发阈值设置为: %.1f", _threshold_value);
-}
-
-void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
-    if (!_auto_switch_enabled || _is_active) {
-        return; // 自动开关未启用或已经激活
-    }
-
-    // 检查是否有任一通道超过阈值
-    bool ch6_triggered = ch6_max > _threshold_value;
-    bool ch7_triggered = ch7_max > _threshold_value;
-
-    if (ch6_triggered || ch7_triggered) {
-        if (!_first_trigger_detected) {
-            // 首次触发，进入等待状态
-            if (ch6_triggered && ch7_triggered) {
-                // 两者都触发，选择数值更大的一方
-                _triggered_channel = (ch6_max > ch7_max) ? 6 : 7;
-                ESP_LOGI(TAG, "🚀 双通道触发！选择ch%d (ch6=%.1f, ch7=%.1f)，等待300ms检测对应电机",
-                         _triggered_channel, ch6_max, ch7_max);
-            } else if (ch6_triggered) {
-                _triggered_channel = 6;
-                ESP_LOGI(TAG, "🚀 ch6触发(%.1f)！等待300ms检测2号电机-v", ch6_max);
-            } else {
-                _triggered_channel = 7;
-                ESP_LOGI(TAG, "🚀 ch7触发(%.1f)！等待300ms检测1号电机+v", ch7_max);
-            }
-
-            _first_trigger_detected = true;
-        }
-
-        // 激活速度跟随模式，进入等待状态
-        _is_active = true;
-        _state = SPEED_FOLLOW_WAITING;
-        _waiting_start_time = esp_timer_get_time() / 1000;
-
-        ESP_LOGI(TAG, "✅ 进入等待状态，300ms后检测%s电机速度",
-                 _triggered_channel == 6 ? "2号" : "1号");
-    }
-}
-
-void SpeedFollowMode::manualDeactivate() {
-    if (_is_active) {
-        _is_active = false;
-        _state = SPEED_FOLLOW_IDLE;
-        _first_trigger_detected = false;
-        _triggered_channel = 0;
-        _waiting_start_time = 0;
-        _working_start_time = 0;
-        ESP_LOGI(TAG, "❌ 速度跟随模式已手动关闭");
-    }
-}
-
-void SpeedFollowMode::updateCycleRMS(float ch6_filtered, float ch7_filtered) {
-    // 检测周期开始（进入PHASE1）
-    if (_state == SPEED_FOLLOW_PHASE1 && _last_state != SPEED_FOLLOW_PHASE1) {
-        // 周期开始，重置累加变量
-        _ch6_sum = 0.0f;
-        _ch7_sum = 0.0f;
-        _ch6_sum_sq = 0.0f;
-        _ch7_sum_sq = 0.0f;
-        _rms_sample_count = 0;
-        _in_cycle = true;
-    }
-
-    // 在周期中累加滤波值和平方值（PHASE1、PHASE2、IDLE）
-    if (_in_cycle && (_state == SPEED_FOLLOW_PHASE1 ||
-                     _state == SPEED_FOLLOW_PHASE2 ||
-                     _state == SPEED_FOLLOW_IDLE)) {
-        _ch6_sum += ch6_filtered;
-        _ch7_sum += ch7_filtered;
-        _ch6_sum_sq += ch6_filtered * ch6_filtered;
-        _ch7_sum_sq += ch7_filtered * ch7_filtered;
-        _rms_sample_count++;
-    }
-
-    // 检测周期结束（离开IDLE进入WORKING或WAITING状态）
-    if (_in_cycle && _last_state == SPEED_FOLLOW_IDLE &&
-        (_state == SPEED_FOLLOW_MOTOR1_WORKING ||
-         _state == SPEED_FOLLOW_MOTOR2_WORKING ||
-         _state == SPEED_FOLLOW_WAITING)) {
-        // 周期结束，计算高频分量的RMS值
-        if (_rms_sample_count > 0) {
-            // 计算平均值（低频成分）
-            float ch6_mean = _ch6_sum / _rms_sample_count;
-            float ch7_mean = _ch7_sum / _rms_sample_count;
-
-            // 计算方差：Var(X) = E[X²] - E[X]²
-            float ch6_variance = (_ch6_sum_sq / _rms_sample_count) - (ch6_mean * ch6_mean);
-            float ch7_variance = (_ch7_sum_sq / _rms_sample_count) - (ch7_mean * ch7_mean);
-
-            // 方差可能为负（由于浮点精度），确保非负
-            if (ch6_variance < 0.0f) ch6_variance = 0.0f;
-            if (ch7_variance < 0.0f) ch7_variance = 0.0f;
-
-            // 标准差（高频分量的RMS）= sqrt(方差)
-            _ch6_cycle_rms = std::sqrt(ch6_variance);
-            _ch7_cycle_rms = std::sqrt(ch7_variance);
-        }
-        _in_cycle = false;
-    }
-
-    // 更新状态
-    _last_state = _state;
-}
-
-void SpeedFollowMode::adjustParametersBasedOnThreshold() {
-    // 取两个通道的RMS值中的最大值作为判断依据
-    float max_value = (_ch6_cycle_rms > _ch7_cycle_rms) ? _ch6_cycle_rms : _ch7_cycle_rms;
-
-    // 根据区间调整参数
-    if (max_value < 1.5f) {
-        // 区间1：小于6.5
-        // 电机1配置
-        _config_motor1.phase1_duration_ms = 350;
-        _config_motor1.phase2_duration_ms = 350;
-        _config_motor1.idle_duration_ms = 200;
-        _config_motor1.phase1.torque = 0.5f;
-        _config_motor1.phase2.torque = -0.5f;
-
-        // 电机2配置
-        _config_motor2.phase1_duration_ms = 350;
-        _config_motor2.phase2_duration_ms = 350;
-        _config_motor2.idle_duration_ms = 200;
-        _config_motor2.phase1.torque = -0.5f;
-        _config_motor2.phase2.torque = 0.5f;
-
-        //ESP_LOGI(TAG, "📊 参数调整: max_value=%.2f < 6.5, 时间=350/350/200ms, 力矩=±0.5", max_value);
-    }
-    else if (max_value <= 2.0f) {
-        // 区间2：6.5到7.5
-        // 电机1配置
-        _config_motor1.phase1_duration_ms = 400;
-        _config_motor1.phase2_duration_ms = 350;
-        _config_motor1.idle_duration_ms = 200;
-        _config_motor1.phase1.torque = 0.7f;
-        _config_motor1.phase2.torque = -0.7f;
-
-        // 电机2配置
-        _config_motor2.phase1_duration_ms = 400;
-        _config_motor2.phase2_duration_ms = 350;
-        _config_motor2.idle_duration_ms = 200;
-        _config_motor2.phase1.torque = -0.7f;
-        _config_motor2.phase2.torque = 0.7f;
-
-        //ESP_LOGI(TAG, "📊 参数调整: 6.5 <= max_value=%.2f <= 7.5, 时间=400/400/100ms, 力矩=±0.7", max_value);
-    }
-    else {
-        // 区间3：大于7.5
-        // 电机1配置
-        _config_motor1.phase1_duration_ms = 450;
-        _config_motor1.phase2_duration_ms = 350;
-        _config_motor1.idle_duration_ms = 200;
-        _config_motor1.phase1.torque = 1.0f;
-        _config_motor1.phase2.torque = -1.0f;
-
-        // 电机2配置
-        _config_motor2.phase1_duration_ms = 450;
-        _config_motor2.phase2_duration_ms = 350;
-        _config_motor2.idle_duration_ms = 200;
-        _config_motor2.phase1.torque = -1.0f;
-        _config_motor2.phase2.torque = 1.0f;
-
-        //ESP_LOGI(TAG, "📊 参数调整: max_value=%.2f > 7.5, 时间=450/450/50ms, 力矩=±1.0", max_value);
-    }
-}
-
