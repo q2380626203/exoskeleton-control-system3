@@ -13,6 +13,8 @@ static const char* utf8_gb2312_map[][2] = {
     {"增加", "\xD4\xF6\xBC\xD3"},
     {"减少", "\xBC\xF5\xC9\xD9"},
     {"关闭", "\xB9\xD8\xB1\xD5"},
+    {"开启", "\xBF\xAA\xC6\xF4"},
+    {"停止", "\xCD\xA3\xD6\xB9"},
     {"当前", "\xB5\xB1\xC7\xB0"},
     {"状态", "\xD7\xB4\xCC\xAC"},
     {"正常", "\xD5\xFD\xB3\xA3"},
