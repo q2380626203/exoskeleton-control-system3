@@ -202,6 +202,10 @@ bool UnitreeMotorDriver::init(uart_port_t uart_num, gpio_num_t tx_pin, gpio_num_
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .rx_flow_ctrl_thresh = 122,
         .source_clk = UART_SCLK_APB,
+        .flags = {
+            .allow_pd = 0,
+            .backup_before_sleep = 0
+        }
     };
 
     uart_wait_tx_idle_polling(_uart_num);

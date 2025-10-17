@@ -19,7 +19,7 @@
 static const char *TAG = "MAIN";
 
 // 语音模块实例（全局可见，供C和C++代码使用）
-extern "C" VoiceModule voice_module = {0};
+VoiceModule voice_module{};
 
 // Web服务器句柄
 static httpd_handle_t web_server = NULL;
@@ -260,8 +260,8 @@ void motor_control_task(void *pvParameters) {
     uint32_t loop_count = 0;
 
     // 电机数据变量
-    MotorDataA1 motor_data_1 = {0};
-    MotorDataA1 motor_data_2 = {0};
+    MotorDataA1 motor_data_1{};
+    MotorDataA1 motor_data_2{};
 
     // Local variables to hold the current parameters for both motors
     MotorParams current_motor_1, current_motor_2;
