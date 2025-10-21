@@ -9,12 +9,12 @@ extern "C" {
 #endif
 
 // 环形缓存区大小
-// 500Hz采样率 × 3.75秒 = 1875个数据点，用于分析两个周期的位置变化
-#define POSITION_BUFFER_SIZE 1875
+// 200Hz采样率（5ms周期）× 3.75秒 = 750个数据点，用于分析两个周期的位置变化
+#define POSITION_BUFFER_SIZE 750
 
 // ch6 ch7差值缓存区大小
-// 500Hz采样率 × 1.2秒 = 600个数据点，用于存储波峰波谷差值
-#define DIFF_BUFFER_SIZE 600
+// 200Hz采样率（5ms周期）× 1.2秒 = 240个数据点，用于存储波峰波谷差值
+#define DIFF_BUFFER_SIZE 240
 
 // 位置数据结构
 typedef struct {

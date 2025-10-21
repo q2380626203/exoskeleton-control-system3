@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "unitree_motor.h"
+#include "rs01_motor.h"          // RS01电机驱动
 #include "motor_commands.h"
 #include "speed_follow_mode.h"
 #include "position_buffer.h"
@@ -55,7 +56,7 @@ static MotorParams global_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
 SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
 
 // 速度跟随模式配置参数
-static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
+static float global_speed_follow_threshold = 1.0f; // 自动激活阈值（可调整）
 
 /**
  * @brief Web服务器命令处理回调
@@ -218,23 +219,18 @@ extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_nam
 }
 
 /**
- * @brief 电机控制任务，以500Hz频率执行双电机同步控制
+ * @brief 电机控制任务，以500Hz频率执行双电机同步控制（RS01电机版本）
  * @param pvParameters FreeRTOS任务参数（未使用）
  * @details 执行流程：
  *          1. 读取全局电机参数（互斥锁保护）
- *          2. 向两个电机发送控制命令并接收反馈
- *          3. 更新位置缓存区并进行波形分析
- *          4. 调用速度跟随状态机 update()
- *          5. 打印电机数据（10通道格式化输出）
+ *          2. 使用Motor_ControlMode_SendRecv发送MIT控制指令并接收反馈
+ *          3. 从motors[]全局数组读取电机反馈数据
+ *          4. 更新位置缓存区并进行波形分析
+ *          5. 调用速度跟随状态机 update()
+ *          6. 打印电机数据（10通道格式化输出）
  */
 void motor_control_task(void *pvParameters) {
-    if (!motor_driver.isInitialized()) {
-        ESP_LOGE(TAG, "电机驱动未初始化！");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    ESP_LOGI(TAG, "电机控制任务启动 - 纯串口同步模式 (500Hz)");
+    ESP_LOGI(TAG, "电机控制任务启动 - RS01电机同步模式 (500Hz)");
 
     // 初始化速度跟随模式
     speed_follow.init();
@@ -259,7 +255,7 @@ void motor_control_task(void *pvParameters) {
     // 统计计数器
     uint32_t loop_count = 0;
 
-    // 电机数据变量
+    // 电机数据变量（用于兼容现有代码）
     MotorDataA1 motor_data_1{};
     MotorDataA1 motor_data_2{};
 
@@ -272,50 +268,66 @@ void motor_control_task(void *pvParameters) {
             current_motor_1 = global_motor_1;
             current_motor_2 = global_motor_2;
             xSemaphoreGive(motor_params_mutex);
+
+            // 🔍 诊断：每2秒打印一次读取到的参数
+            static uint32_t last_print_time = 0;
+            uint32_t now = esp_timer_get_time() / 1000;
+            if (now - last_print_time > 2000) {
+                // ESP_LOGI(TAG, "📖 控制循环读取: M1(vel=%.2f,t=%.2f) M2(vel=%.2f,t=%.2f)",
+                //          current_motor_1.motor_vel, current_motor_1.motor_t,
+                //          current_motor_2.motor_vel, current_motor_2.motor_t);
+                last_print_time = now;
+            }
         } else {
             ESP_LOGW(TAG, "Failed to take motor_params_mutex, using default parameters.");
             // Fallback to default values if mutex acquisition fails
-            current_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
-            current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
+            current_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         }
 
-        // 控制电机1 - FOC模式，通过MIT参数控制
-        MotorCmdA1 control_cmd_1;
-        control_cmd_1.id = current_motor_1.motor_id;
-        control_cmd_1.mode = current_motor_1.motor_mode;  // FOC模式(1)
-        control_cmd_1.pos = current_motor_1.motor_pos;    // MIT参数
-        control_cmd_1.vel = current_motor_1.motor_vel;    // MIT参数
-        control_cmd_1.t = current_motor_1.motor_t;        // MIT参数
-        control_cmd_1.kp = current_motor_1.motor_kp;      // MIT参数
-        control_cmd_1.kd = current_motor_1.motor_kd;      // MIT参数
+        // ========== 控制电机1 - RS01 MIT运控模式 ==========
+        int result1 = Motor_ControlMode_SendRecv(
+            &motors[0],                    // 电机1（ID=1）
+            current_motor_1.motor_t,       // torque: MIT力矩参数
+            current_motor_1.motor_pos,     // position: MIT位置参数
+            current_motor_1.motor_vel,     // speed: MIT速度参数
+            current_motor_1.motor_kp,      // kp: MIT位置增益
+            current_motor_1.motor_kd       // kd: MIT阻尼增益
+        );
 
-        esp_err_t err1 = motor_driver.sendRecv(control_cmd_1, motor_data_1);
-        if (err1 == ESP_OK) {
+        if (result1 == 0) {
+            // motors[0]已经是MotorDataA1格式，直接复制即可
+            motor_data_1 = motors[0];
+
             // 添加位置数据到缓存区
             uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));
-        // 控制电机2 - FOC模式，通过MIT参数控制
-        MotorCmdA1 control_cmd_2;
-        control_cmd_2.id = current_motor_2.motor_id;
-        control_cmd_2.mode = current_motor_2.motor_mode;  // FOC模式(1)
-        control_cmd_2.pos = current_motor_2.motor_pos;    // MIT参数
-        control_cmd_2.vel = current_motor_2.motor_vel;    // MIT参数
-        control_cmd_2.t = current_motor_2.motor_t;        // MIT参数
-        control_cmd_2.kp = current_motor_2.motor_kp;      // MIT参数
-        control_cmd_2.kd = current_motor_2.motor_kd;      // MIT参数
+        // 确保两次发送指令间隔至少5ms（RS01电机硬件要求）
+        vTaskDelay(pdMS_TO_TICKS(5));
 
-        esp_err_t err2 = motor_driver.sendRecv(control_cmd_2, motor_data_2);
-        if (err2 == ESP_OK) {
+        // ========== 控制电机2 - RS01 MIT运控模式 ==========
+        int result2 = Motor_ControlMode_SendRecv(
+            &motors[1],                    // 电机2（ID=2）
+            current_motor_2.motor_t,       // torque: MIT力矩参数
+            current_motor_2.motor_pos,     // position: MIT位置参数
+            current_motor_2.motor_vel,     // speed: MIT速度参数
+            current_motor_2.motor_kp,      // kp: MIT位置增益
+            current_motor_2.motor_kd       // kd: MIT阻尼增益
+        );
+
+        if (result2 == 0) {
+            // motors[1]已经是MotorDataA1格式，直接复制即可
+            motor_data_2 = motors[1];
+
             // 添加位置数据到缓存区
             uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
             position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
         }
 
         // 合并打印两个电机的数据：电机1(ch0,ch1,ch2) + 电机2(ch3,ch4,ch5) + 波峰波谷差值最大值(ch6,ch7)
-        if (err1 == ESP_OK && err2 == ESP_OK) {
+        if (result1 == 0 && result2 == 0) {
             // 分析波形并获取差值
             wave_analysis_result_t motor1_wave, motor2_wave;
             float motor1_diff = 0.0f, motor2_diff = 0.0f;
@@ -337,13 +349,6 @@ void motor_control_task(void *pvParameters) {
             float ch6_max = diff_buffer_get_ch6_max(&position_buffers);
             float ch7_max = diff_buffer_get_ch7_max(&position_buffers);
 
-            // 获取ch6和ch7经过滑动窗口平均滤波后的瞬时值
-            //float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
-            //float ch7_filtered = diff_buffer_get_ch7_filtered(&position_buffers, 100);
-
-            // 更新速度跟随模式的周期高频RMS计算
-            //speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
-
             // 获取周期高频RMS值作为输出
             float ch6_new = 1.0;
             float ch7_new = 1.0;
@@ -355,8 +360,6 @@ void motor_control_task(void *pvParameters) {
             speed_follow.update(motor_data_1, ch6_max, ch7_max);
             speed_follow.update(motor_data_2, ch6_max, ch7_max);
 
-            
-
             printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
                    motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
@@ -365,12 +368,8 @@ void motor_control_task(void *pvParameters) {
 
         loop_count++;
 
-        // 关闭详细状态打印，只保留格式化的电机数据输出
-        // 数据按 "motors:ch0,ch1,ch2,ch3,ch4,ch5" 格式输出
-        // ch0-ch2: 电机1的位置,速度,力矩; ch3-ch5: 电机2的位置,速度,力矩
-
         // 高频率控制: 2ms延时 = 500Hz控制频率
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -422,13 +421,43 @@ extern "C" void app_main() {
     register_motor_param_getter(handle_web_get_motor_param);
     ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
 
+    // ========== 初始化RS01电机驱动 ==========
+    // 注意：RS01使用UART1，波特率115200，GPIO 10(TX)/11(RX)
+    ESP_LOGI(TAG, "正在初始化RS01电机驱动...");
+
+    // 初始化UART（不需要callback）
+    UART_Rx_Init(NULL);
+
+    // 设置电机1为运控模式并使能
+    Change_Mode(&motors[0], CTRL_MODE);  // motors[0] = 电机ID 1
+    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
+
+    Motor_Enable(&motors[0]);
+    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
+    ESP_LOGI(TAG, "电机1已设置为运控模式并使能");
+
+    // 设置电机2为运控模式并使能
+    Change_Mode(&motors[1], CTRL_MODE);  // motors[1] = 电机ID 2
+    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
+
+    Motor_Enable(&motors[1]);
+    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
+    ESP_LOGI(TAG, "电机2已设置为运控模式并使能");
+
+    ESP_LOGI(TAG, "RS01电机驱动初始化成功");
+
+    // ========== 注释掉Unitree电机初始化 ==========
     // 初始化电机驱动
-    if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
-        ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");
-    } else {
-        ESP_LOGE(TAG, "电机驱动初始化失败！");
-        return;
-    }
+    // if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
+    //     ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");
+    // } else {
+    //     ESP_LOGE(TAG, "电机驱动初始化失败！");
+    //     return;
+    // }
 
     // 初始化按键检测器
     ESP_LOGI(TAG, "正在初始化按键检测器...");

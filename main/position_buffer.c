@@ -74,7 +74,7 @@ static bool position_buffer_analyze_latest_wave(position_buffer_t* buffer, wave_
 
     // 分析参数
     const uint32_t min_distance = 5; // 波峰波谷之间的最小距离
-    const float min_amplitude = 0.1f; // 最小幅度阈值
+    const float min_amplitude = 0.01f; // 最小幅度阈值
 
     // 从最新数据开始向前搜索
     uint32_t search_length = buffer->count > 500 ? 500 : buffer->count; // 限制搜索范围
