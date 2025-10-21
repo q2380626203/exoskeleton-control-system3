@@ -136,7 +136,7 @@ bool UnitreeMotorDriver::unpack_motor_data_go_m8010_6(const uint8_t* buffer, Mot
     if (received_crc != calculated_crc) {
         ESP_LOGE(TAG_MOTOR, "CRC校验失败: 接收0x%04X, 计算0x%04X", received_crc, calculated_crc);
         // 临时跳过CRC校验，继续解析数据
-        // return false;
+        return false;
     }
 
     // 解包 ID 和 MODE - 字节 2

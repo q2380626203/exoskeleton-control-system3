@@ -10,11 +10,11 @@ static const char *TAG = "BUTTON_DETECTOR";
 
 // 助力调整步长
 #define TORQUE_STEP 0.1f
-// 电机1 Phase1 力矩范围：0 ~ 1.5
+// 电机1 Phase1 力矩范围：0 ~ 2.0
 #define MOTOR1_TORQUE_MIN 0.0f
-#define MOTOR1_TORQUE_MAX 1.5f
-// 电机2 Phase1 力矩范围：-1.5 ~ 0
-#define MOTOR2_TORQUE_MIN -1.5f
+#define MOTOR1_TORQUE_MAX 2.0f
+// 电机2 Phase1 力矩范围：-2.0 ~ 0
+#define MOTOR2_TORQUE_MIN -2.0f
 #define MOTOR2_TORQUE_MAX 0.0f
 
 // ============================================================================
@@ -57,6 +57,7 @@ static void switch_detector_update(SwitchDetector* detector);
 static void default_assist_up_callback(gpio_num_t pin);
 static void default_assist_down_callback(gpio_num_t pin);
 static void default_power_switch_callback(gpio_num_t pin, SwitchState new_state);
+static const char* float_to_chinese_number(float value);
 
 // ============================================================================
 // 静态辅助函数实现
@@ -207,11 +208,54 @@ static void switch_detector_update(SwitchDetector* detector) {
 }
 
 /**
+ * @brief 将浮点数转换为中文数字字符串
+ * @param value 浮点数值（范围 0.0 ~ 2.0）
+ * @return 中文数字字符串
+ * @note 将浮点数乘以10后转换为整数，然后转换为对应的中文数字
+ *       例如：0.6 -> "六", 0.7 -> "七", 1.5 -> "十五", 2.0 -> "二十"
+ */
+static const char* float_to_chinese_number(float value) {
+    // 将浮点数乘以10并四舍五入转换为整数
+    int num = (int)(value * 10 + 0.5f);
+
+    // 限制范围在 0-20
+    if (num < 0) num = 0;
+    if (num > 20) num = 20;
+
+    // 中文数字映射表
+    static const char* chinese_numbers[] = {
+        "零",   // 0
+        "一",   // 1
+        "二",   // 2
+        "三",   // 3
+        "四",   // 4
+        "五",   // 5
+        "六",   // 6
+        "七",   // 7
+        "八",   // 8
+        "九",   // 9
+        "十",   // 10
+        "十一", // 11
+        "十二", // 12
+        "十三", // 13
+        "十四", // 14
+        "十五", // 15
+        "十六", // 16
+        "十七", // 17
+        "十八", // 18
+        "十九", // 19
+        "二十"  // 20
+    };
+
+    return chinese_numbers[num];
+}
+
+/**
  * @brief 助力增加按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
  * @note 增加电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 1.5，每次增加 TORQUE_STEP
- *       - 电机2: 范围 -1.5 ~ 0，每次增加力矩绝对值（更大的负值）
+ *       - 电机1: 范围 0 ~ 2.0，每次增加 TORQUE_STEP
+ *       - 电机2: 范围 -2.0 ~ 0，每次增加力矩绝对值（更大的负值）
  */
 static void default_assist_up_callback(gpio_num_t pin) {
     // 获取电机1和电机2的配置
@@ -233,15 +277,18 @@ static void default_assist_up_callback(gpio_num_t pin) {
     motor2_config->phase1.torque = new_torque2;
 
     ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
-    voice_speak(&voice_module, "助力增加");
+
+    // 播放电机1的力矩绝对值（中文数字）
+    const char* torque_text = float_to_chinese_number(new_torque1);
+    voice_speak(&voice_module, torque_text);
 }
 
 /**
  * @brief 助力减少按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
  * @note 减少电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 1.5，每次减少 TORQUE_STEP
- *       - 电机2: 范围 -1.5 ~ 0，每次减少力矩绝对值（更小的负值）
+ *       - 电机1: 范围 0 ~ 2.0，每次减少 TORQUE_STEP
+ *       - 电机2: 范围 -2.0 ~ 0，每次减少力矩绝对值（更小的负值）
  */
 static void default_assist_down_callback(gpio_num_t pin) {
     // 获取电机1和电机2的配置
@@ -263,7 +310,10 @@ static void default_assist_down_callback(gpio_num_t pin) {
     motor2_config->phase1.torque = new_torque2;
 
     ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
-    voice_speak(&voice_module, "助力减少");
+
+    // 播放电机1的力矩绝对值（中文数字）
+    const char* torque_text = float_to_chinese_number(new_torque1);
+    voice_speak(&voice_module, torque_text);
 }
 
 /**

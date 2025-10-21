@@ -101,7 +101,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase1.vel = 10.0f;
     _config_motor1.phase1.torque = 0.7f;
     _config_motor1.phase1.kp = 0.0f;
-    _config_motor1.phase1.kd = 0.05f;
+    _config_motor1.phase1.kd = 0.08f;
 
     // 电机1第二阶段参数：1 0.0 -10 -0.5 0.0 0.03
     _config_motor1.phase2.mode = 1;
@@ -132,7 +132,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase1.vel = -10.0f;
     _config_motor2.phase1.torque = -0.7f;
     _config_motor2.phase1.kp = 0.0f;
-    _config_motor2.phase1.kd = 0.05f;
+    _config_motor2.phase1.kd = 0.08f;
 
     // 电机2第二阶段参数：1 0.0 +10 +0.5 0.0 0.03
     _config_motor2.phase2.mode = 1;
