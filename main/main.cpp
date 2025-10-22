@@ -305,7 +305,7 @@ void motor_control_task(void *pvParameters) {
         }
 
         // 确保两次发送指令间隔至少5ms（RS01电机硬件要求）
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(1));
 
         // ========== 控制电机2 - RS01 MIT运控模式 ==========
         int result2 = Motor_ControlMode_SendRecv(
@@ -369,7 +369,7 @@ void motor_control_task(void *pvParameters) {
         loop_count++;
 
         // 高频率控制: 2ms延时 = 500Hz控制频率
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
@@ -425,26 +425,22 @@ extern "C" void app_main() {
     // 注意：RS01使用UART1，波特率115200，GPIO 10(TX)/11(RX)
     ESP_LOGI(TAG, "正在初始化RS01电机驱动...");
 
-    // 初始化UART（不需要callback）
-    UART_Rx_Init(NULL);
+    // 初始化TWAI（不需要callback，使用事件驱动接收）
+    TWAI_Init(NULL);
 
     // 设置电机1为运控模式并使能
     Change_Mode(&motors[0], CTRL_MODE);  // motors[0] = 电机ID 1
-    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
     vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
 
     Motor_Enable(&motors[0]);
-    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
     vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
     ESP_LOGI(TAG, "电机1已设置为运控模式并使能");
 
     // 设置电机2为运控模式并使能
     Change_Mode(&motors[1], CTRL_MODE);  // motors[1] = 电机ID 2
-    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
     vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
 
     Motor_Enable(&motors[1]);
-    uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(10));
     vTaskDelay(pdMS_TO_TICKS(5));  // 确保指令间隔至少5ms
     ESP_LOGI(TAG, "电机2已设置为运控模式并使能");
 

@@ -104,17 +104,17 @@ void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, 
  */
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
-    _config_motor1.trigger_speed = 0.25f;   // 触发速度：+0.25 rad/s (电机1)
+    _config_motor1.trigger_speed = 0.35f;   // 触发速度：+0.25 rad/s (电机1)
     _config_motor1.phase1_duration_ms = 500;
     _config_motor1.phase2_duration_ms = 350;
     _config_motor1.waiting_duration_ms = 300;  // 等待时间
-    _config_motor1.idle_duration_ms = 80;      // 空闲时间
+    _config_motor1.idle_duration_ms = 100;      // 空闲时间
 
     // 电机1第一阶段参数（抬腿）：MIT运控模式 0.0 +1.0 +4.0 0.0 1.0
     _config_motor1.phase1.mode = 0;  // MIT运控模式（与初始化一致）
     _config_motor1.phase1.pos = 0.0f;
     _config_motor1.phase1.vel = 1.0f;
-    _config_motor1.phase1.torque = 4.0f;
+    _config_motor1.phase1.torque = 4.5f;
     _config_motor1.phase1.kp = 0.0f;
     _config_motor1.phase1.kd = 1.5f;
 
@@ -135,17 +135,17 @@ void SpeedFollowMode::init() {
     _config_motor1.idle.kd = 0.0f;
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
-    _config_motor2.trigger_speed = -0.25f;  // 触发速度：-0.25 rad/s (电机2)
+    _config_motor2.trigger_speed = -0.35f;  // 触发速度：-0.25 rad/s (电机2)
     _config_motor2.phase1_duration_ms = 500;
     _config_motor2.phase2_duration_ms = 350;
     _config_motor2.waiting_duration_ms = 300;  // 等待时间：300ms
-    _config_motor2.idle_duration_ms = 80;      // 空闲时间：50ms
+    _config_motor2.idle_duration_ms = 100;      // 空闲时间：50ms
 
     // 电机2第一阶段参数（抬腿）：MIT运控模式 0.0 -1.0 -4.0 0.0 1.0
     _config_motor2.phase1.mode = 0;  // MIT运控模式
     _config_motor2.phase1.pos = 0.0f;
     _config_motor2.phase1.vel = -1.0f;
-    _config_motor2.phase1.torque = -4.0f;
+    _config_motor2.phase1.torque = -4.5f;
     _config_motor2.phase1.kp = 0.0f;
     _config_motor2.phase1.kd = 1.5f;
 
@@ -175,7 +175,7 @@ void SpeedFollowMode::init() {
     // 初始化动态参数
     _phase1_timeout_ms = 600;       // PHASE1超时时间（抬腿阶段）
     _phase2_timeout_ms = 450;       // PHASE2超时时间（压腿阶段）
-    _velocity_scale = 0.8f;         // 速度缩放因子
+    _velocity_scale = 0.9f;         // 速度缩放因子
     _phase2_vel_threshold = 0.25f;   // PHASE2完成速度阈值
 
     // ESP_LOGI(TAG, "双电机协作速度跟随模式已初始化");
