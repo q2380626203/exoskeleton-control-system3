@@ -3,8 +3,11 @@
 
 #include <stdint.h>
 #include <string.h>
-#include "driver/uart.h"
 #include "driver/gpio.h"
+#include "esp_twai.h"          // TWAI驱动核心API
+#include "esp_twai_onchip.h"   // TWAI片上控制器配置
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"  // FreeRTOS事件组，用于数据同步
 #include <math.h>
 #include <string.h>
 #include "motor_commands.h"  // 引入宇树电机数据结构
@@ -13,14 +16,16 @@
 extern "C" {
 #endif
 
-// UART Configuration
-#define RS01_UART_NUM       UART_NUM_1  // ESP-IDF UART port for RS01 motor communication
-#define RS01_UART_TX_PIN    GPIO_NUM_10 // UART transmit pin
-#define RS01_UART_RX_PIN    GPIO_NUM_11 // UART receive pin
-#define RS01_UART_BAUDRATE  115200      // UART baud rate
+// TWAI (CAN) Configuration
+#define RS01_TWAI_TX_PIN    GPIO_NUM_11   // TWAI TX引脚
+#define RS01_TWAI_RX_PIN    GPIO_NUM_10   // TWAI RX引脚
+#define RS01_TWAI_BITRATE   1000000      // CAN总线波特率 1Mbps
+#define RS01_TWAI_TX_QUEUE_DEPTH 10      // 发送队列深度
 
-// CAN-to-Serial Module Protocol
-#define CAN_RAW_FRAME_LENGTH 12
+// Motor Data Synchronization (数据同步配置)
+#define MOTOR1_DATA_READY_BIT (1 << 0)   // 电机1数据就绪事件位
+#define MOTOR2_DATA_READY_BIT (1 << 1)   // 电机2数据就绪事件位
+#define MOTOR_DATA_TIMEOUT_MS 10         // 等待电机反馈数据超时时间（毫秒）
 
 // Motor and Master IDs
 #define MASTER_ID        0xFD
@@ -82,14 +87,15 @@ typedef MotorDataA1 MI_Motor;
 // Callback function type for motor data updates
 typedef void (*MotorDataCallback)(MI_Motor*);
 
-// Global variables for UART communication.
-extern uart_config_t motor_uart_config;
+// Global variables for TWAI communication
+extern twai_node_handle_t twai_node_handle;  // TWAI节点句柄
+extern EventGroupHandle_t motor_data_event_group;  // 电机数据同步事件组
 extern MI_Motor motors[2];
 extern MotorDataCallback data_callback;
 
 // Function Prototypes
-void UART_Rx_Init(MotorDataCallback callback);
-void UART_Send_Frame(const can_frame_t* frame);
+void TWAI_Init(MotorDataCallback callback);
+void TWAI_Send_Frame(const can_frame_t* frame);
 
 void Motor_Enable(MI_Motor* motor);
 void Motor_Reset(MI_Motor* motor, uint8_t clear_error);

@@ -2,11 +2,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 static const char *TAG = "RS01_MOTOR";
 
 // Global variables
-uart_config_t motor_uart_config;
+twai_node_handle_t twai_node_handle = NULL;  // TWAI节点句柄
+EventGroupHandle_t motor_data_event_group = NULL;  // 电机数据同步事件组
+QueueHandle_t twai_rx_queue = NULL;  // TWAI接收队列（用于ISR到任务的通信）
 MI_Motor motors[2];
 MotorDataCallback data_callback = NULL;
 
@@ -14,10 +17,18 @@ MotorDataCallback data_callback = NULL;
 static TickType_t lastPrintTime[2] = {0, 0};
 static const TickType_t PRINT_INTERVAL = pdMS_TO_TICKS(2000);
 
+// TWAI帧存储结构（用于队列传输，包含实际数据而非指针）
+typedef struct {
+    twai_frame_header_t header;
+    uint8_t data[8];
+    uint8_t data_len;
+} twai_frame_storage_t;
+
 /* ========================================================================
  * 静态函数声明 (Static Function Declarations)
  * ======================================================================== */
-static void parse_can_frame(const uint8_t* can_payload);
+static void parse_can_frame(const twai_frame_t* rx_frame);
+static bool IRAM_ATTR twai_rx_callback(twai_node_handle_t handle, const twai_rx_done_event_data_t *edata, void *user_ctx);
 
 /* ========================================================================
  * 辅助函数 (Helper Functions)
@@ -81,78 +92,165 @@ float uint_to_float(int x_int, float x_min, float x_max, int bits) {
 }
 
 /* ========================================================================
- * 外部函数 - UART通信 (External Functions - UART Communication)
+ * 外部函数 - TWAI通信 (External Functions - TWAI Communication)
  * ======================================================================== */
 
 /**
- * @brief 通过UART发送12字节CAN原始帧
- * @details 将CAN帧结构体打包为12字节格式（4字节扩展ID + 8字节数据）并通过UART发送
- *          帧格式：[扩展CAN ID高字节][扩展CAN ID次高字节][扩展CAN ID次低字节][扩展CAN ID低字节][8字节数据负载]
+ * @brief 通过TWAI发送CAN扩展帧
+ * @details 将CAN帧结构体转换为TWAI帧格式并发送
+ *          扩展帧ID格式：[帧类型5位][数据字段16位][目标ID 8位] = 29位扩展ID
  * @param frame 指向CAN帧结构体的指针
  */
-void UART_Send_Frame(const can_frame_t* frame) {
-    // Construct the 29-bit extended CAN ID directly from the frame structure
+void TWAI_Send_Frame(const can_frame_t* frame) {
+    // 构造29位扩展CAN ID
     uint32_t extended_id = ((uint32_t)frame->type << 24) |
                            ((uint32_t)frame->data << 8) |
                            frame->target_id;
 
-    uint8_t packet[CAN_RAW_FRAME_LENGTH];
+    // 构造TWAI帧
+    twai_frame_t tx_msg = {
+        .header.id = extended_id,
+        .header.ide = true,  // 使用29位扩展ID
+        .header.rtr = false, // 数据帧（非远程帧）
+        .header.fdf = false, // 经典CAN格式（非FD）
+        .header.brs = false, // 不使用位速率切换
+        .buffer = (uint8_t*)frame->payload,
+        .buffer_len = 8
+    };
 
-    // Pack the 4-byte extended CAN ID (big-endian)
-    packet[0] = (extended_id >> 24) & 0xFF;
-    packet[1] = (extended_id >> 16) & 0xFF;
-    packet[2] = (extended_id >> 8) & 0xFF;
-    packet[3] = extended_id & 0xFF;
-
-    // Copy the 8-byte data payload
-    memcpy(&packet[4], frame->payload, 8);
-
-    // 打印原始发送数据（调试模式 - 仅在测试时启用）
-    // ESP_LOGI(TAG, "发送[电机%d]: %02X %02X %02X %02X | %02X %02X %02X %02X %02X %02X %02X %02X",
-    //          frame->target_id,
-    //          packet[0], packet[1], packet[2], packet[3],
-    //          packet[4], packet[5], packet[6], packet[7],
-    //          packet[8], packet[9], packet[10], packet[11]);
-
-    // Send via UART
-    int written = uart_write_bytes(RS01_UART_NUM, packet, CAN_RAW_FRAME_LENGTH);
-    if (written != CAN_RAW_FRAME_LENGTH) {
-        ESP_LOGE(TAG, "UART write failed, expected %d, wrote %d", CAN_RAW_FRAME_LENGTH, written);
+    // 发送CAN帧（超时0表示队列满时立即返回）
+    esp_err_t ret = twai_node_transmit(twai_node_handle, &tx_msg, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "TWAI发送失败: %s (ID=0x%lx)", esp_err_to_name(ret), extended_id);
     }
 }
 
 /**
- * @brief 初始化RS01电机UART通信
- * @details 配置UART参数（115200bps, 8N1），安装UART驱动，并初始化电机结构体数组
+ * @brief TWAI接收中断回调函数（在ISR上下文中执行）
+ * @details 当TWAI接收到CAN帧时触发，从ISR中读取帧并放入队列供任务处理
+ *          注意：不在ISR中进行浮点运算，避免协处理器异常
+ * @param handle TWAI节点句柄
+ * @param edata 接收事件数据
+ * @param user_ctx 用户上下文（未使用）
+ * @return false表示不需要唤醒任务
+ */
+static bool IRAM_ATTR twai_rx_callback(twai_node_handle_t handle, const twai_rx_done_event_data_t *edata, void *user_ctx) {
+    twai_frame_t rx_frame = {0};
+    uint8_t data_buffer[8];  // 为CAN数据分配缓冲区
+
+    // 设置缓冲区指针，避免空指针解引用
+    rx_frame.buffer = data_buffer;
+    rx_frame.buffer_len = sizeof(data_buffer);
+
+    // 从ISR中读取接收到的帧
+    if (twai_node_receive_from_isr(handle, &rx_frame) == ESP_OK) {
+        // 统计接收到的帧数量（用于诊断）
+        static uint32_t rx_count = 0;
+        rx_count++;
+
+        // 只处理扩展帧（29位ID）
+        if (rx_frame.header.ide && twai_rx_queue != NULL) {
+            // 创建存储结构，将数据复制进去（避免指针失效）
+            twai_frame_storage_t frame_storage = {
+                .header = rx_frame.header,
+                .data_len = rx_frame.buffer_len
+            };
+            if (rx_frame.buffer_len <= sizeof(frame_storage.data)) {
+                memcpy(frame_storage.data, rx_frame.buffer, rx_frame.buffer_len);
+            }
+
+            // 将帧放入队列，由任务处理（避免在ISR中进行浮点运算）
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xQueueSendFromISR(twai_rx_queue, &frame_storage, &xHigherPriorityTaskWoken);
+
+            // 如果发送到队列导致更高优先级任务就绪，则进行上下文切换
+            if (xHigherPriorityTaskWoken) {
+                return true;  // 需要上下文切换
+            }
+        }
+    }
+
+    return false;  // 不需要上下文切换
+}
+
+/**
+ * @brief TWAI帧处理任务（在任务上下文中执行）
+ * @details 从队列中接收CAN帧并进行解析处理
+ *          在任务上下文中执行浮点运算是安全的
+ * @param arg 任务参数（未使用）
+ */
+static void twai_rx_task(void *arg) {
+    twai_frame_storage_t frame_storage;
+    twai_frame_t rx_frame;
+
+    ESP_LOGI(TAG, "TWAI接收处理任务启动");
+
+    while (1) {
+        // 从队列中接收帧存储结构（阻塞等待）
+        if (xQueueReceive(twai_rx_queue, &frame_storage, portMAX_DELAY) == pdTRUE) {
+            // 重构twai_frame_t结构供解析使用
+            rx_frame.header = frame_storage.header;
+            rx_frame.buffer = frame_storage.data;
+            rx_frame.buffer_len = frame_storage.data_len;
+
+            // 在任务上下文中解析帧（可以安全地进行浮点运算）
+            parse_can_frame(&rx_frame);
+        }
+    }
+}
+
+/**
+ * @brief 初始化RS01电机TWAI通信
+ * @details 配置TWAI参数（200kbps CAN总线），创建TWAI节点，注册接收回调，并初始化电机结构体数组
  *          配置内容：
- *          - 波特率：115200
- *          - 数据位：8
- *          - 校验位：无
- *          - 停止位：1
- *          - UART端口：UART_NUM_1
+ *          - 波特率：200kbps
  *          - TX引脚：GPIO10, RX引脚：GPIO11
+ *          - 扩展帧格式（29位ID）
+ *          - 事件驱动接收模式
  * @param callback 电机数据更新回调函数，当接收到电机反馈时调用
  */
-void UART_Rx_Init(MotorDataCallback callback) {
+void TWAI_Init(MotorDataCallback callback) {
     data_callback = callback;
 
-    // Configure UART parameters
-    motor_uart_config.baud_rate = RS01_UART_BAUDRATE;
-    motor_uart_config.data_bits = UART_DATA_8_BITS;
-    motor_uart_config.parity = UART_PARITY_DISABLE;
-    motor_uart_config.stop_bits = UART_STOP_BITS_1;
-    motor_uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-    motor_uart_config.source_clk = UART_SCLK_DEFAULT;
+    // 创建电机数据同步事件组
+    motor_data_event_group = xEventGroupCreate();
+    if (motor_data_event_group == NULL) {
+        ESP_LOGE(TAG, "Failed to create motor_data_event_group!");
+        return;
+    }
+    ESP_LOGI(TAG, "电机数据同步事件组创建成功");
 
-    // Delete existing UART driver if any (ignore error if not installed)
-    uart_driver_delete(RS01_UART_NUM);
+    // 创建TWAI接收队列（用于ISR到任务的通信）
+    twai_rx_queue = xQueueCreate(10, sizeof(twai_frame_storage_t));
+    if (twai_rx_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create twai_rx_queue!");
+        return;
+    }
+    ESP_LOGI(TAG, "TWAI接收队列创建成功");
 
-    // Install UART driver
-    ESP_ERROR_CHECK(uart_driver_install(RS01_UART_NUM, 1024, 1024, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(RS01_UART_NUM, &motor_uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(RS01_UART_NUM, RS01_UART_TX_PIN, RS01_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    // 配置TWAI节点参数
+    twai_onchip_node_config_t node_config = {
+        .io_cfg.tx = RS01_TWAI_TX_PIN,
+        .io_cfg.rx = RS01_TWAI_RX_PIN,
+        .bit_timing.bitrate = RS01_TWAI_BITRATE,  // 200kbps波特率
+        .tx_queue_depth = RS01_TWAI_TX_QUEUE_DEPTH,
+        .fail_retry_cnt = -1,  // 无限重试
+        .intr_priority = 1,    // 中断优先级
+    };
 
-    // Initialize motor structures (统一为宇树格式)
+    // 创建TWAI控制器驱动实例
+    ESP_ERROR_CHECK(twai_new_node_onchip(&node_config, &twai_node_handle));
+
+    // 注册接收完成事件回调
+    twai_event_callbacks_t user_cbs = {
+        .on_rx_done = twai_rx_callback,
+    };
+    ESP_ERROR_CHECK(twai_node_register_event_callbacks(twai_node_handle, &user_cbs, NULL));
+
+    // 启动TWAI控制器
+    ESP_ERROR_CHECK(twai_node_enable(twai_node_handle));
+
+    // 初始化电机结构体（统一为宇树格式）
     for (int i = 0; i < 2; i++) {
         motors[i].id = (i == 0) ? MOTER_1_ID : MOTER_2_ID;
         motors[i].mode = 0;         // 0:Reset, 1:Cali, 2:Motor
@@ -164,16 +262,21 @@ void UART_Rx_Init(MotorDataCallback callback) {
         motors[i].footForce = 0;    // RS01无此传感器，固定为0
     }
 
-    // 清空UART接收缓冲区，确保干净启动
-    uart_flush_input(RS01_UART_NUM);
+    // 创建TWAI接收处理任务
+    BaseType_t ret = xTaskCreate(twai_rx_task, "twai_rx_task", 4096, NULL, 5, NULL);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create twai_rx_task!");
+        return;
+    }
 
-    ESP_LOGI(TAG, "UART initialized for motor communication");
+    ESP_LOGI(TAG, "TWAI初始化完成 (TX:%d, RX:%d, 波特率:%d)",
+             RS01_TWAI_TX_PIN, RS01_TWAI_RX_PIN, RS01_TWAI_BITRATE);
 }
 
 /**
- * @brief [静态] 解析接收到的12字节CAN帧（参考宇树解析风格）
- * @details RS01 CAN帧格式（12字节）：
- *          字节0-3:  扩展CAN ID（29位）
+ * @brief [静态] 解析接收到的TWAI CAN扩展帧（参考宇树解析风格）
+ * @details RS01 CAN帧格式（扩展帧29位ID + 8字节数据）：
+ *          扩展CAN ID（29位）：
  *                    - Bit 24-28: 帧类型 (0x02=反馈, 0x18=自动上报)
  *                    - Bit 16-23: 状态字段
  *                      * Bit 16:    欠压错误
@@ -184,21 +287,19 @@ void UART_Rx_Init(MotorDataCallback callback) {
  *                      * Bit 21:    未校准错误
  *                      * Bit 22-23: 运行模式 (0:Reset, 1:Cali, 2:Motor)
  *                    - Bit 8-15:  电机ID
- *          字节4-5:  位置反馈 (uint16_t, 大端序)
- *          字节6-7:  速度反馈 (uint16_t, 大端序)
- *          字节8-9:  力矩反馈 (uint16_t, 大端序)
- *          字节10-11: 温度 (uint16_t, 大端序, 单位0.1°C)
+ *          数据负载（8字节）：
+ *          字节0-1:  位置反馈 (uint16_t, 大端序)
+ *          字节2-3:  速度反馈 (uint16_t, 大端序)
+ *          字节4-5:  力矩反馈 (uint16_t, 大端序)
+ *          字节6-7:  温度 (uint16_t, 大端序, 单位0.1°C)
  *
  *          解析完成后触发回调函数（如果已注册）
  *
- * @param can_payload 指向12字节CAN帧数据的指针
+ * @param rx_frame 指向TWAI接收帧的指针
  */
-static void parse_can_frame(const uint8_t* can_payload) {
-    // ========== 解析扩展CAN ID（字节0-3） ==========
-    uint32_t extended_id = ((uint32_t)can_payload[0] << 24) |
-                           ((uint32_t)can_payload[1] << 16) |
-                           ((uint32_t)can_payload[2] << 8) |
-                           can_payload[3];
+static void parse_can_frame(const twai_frame_t* rx_frame) {
+    // ========== 解析扩展CAN ID ==========
+    uint32_t extended_id = rx_frame->header.id;
 
     uint8_t type = (extended_id >> 24) & 0x1F;  // 帧类型
     uint8_t motor_id = (extended_id >> 8) & 0xFF;  // 电机ID
@@ -214,25 +315,25 @@ static void parse_can_frame(const uint8_t* can_payload) {
         return;
     }
 
-    // ========== 解析电机数据（字节4-11） ==========
+    // ========== 解析电机数据（8字节负载） ==========
     MI_Motor* motor = &motors[motor_id - 1];  // 电机1→索引0，电机2→索引1
     motor->id = motor_id;
 
-    const uint8_t* data = &can_payload[4];  // 数据负载起始位置
+    const uint8_t* data = rx_frame->buffer;  // 数据负载起始位置
 
-    // 解析位置 - 字节4-5 (uint16_t, 大端序, 范围-12.57~12.57 rad)
+    // 解析位置 - 字节0-1 (uint16_t, 大端序, 范围-12.57~12.57 rad)
     uint16_t raw_pos = (data[0] << 8) | data[1];
     motor->pos = uint_to_float(raw_pos, P_MIN, P_MAX, 16);
 
-    // 解析速度 - 字节6-7 (uint16_t, 大端序, 范围-44~44 rad/s)
+    // 解析速度 - 字节2-3 (uint16_t, 大端序, 范围-44~44 rad/s)
     uint16_t raw_vel = (data[2] << 8) | data[3];
     motor->vel = uint_to_float(raw_vel, V_MIN, V_MAX, 16);
 
-    // 解析力矩 - 字节8-9 (uint16_t, 大端序, 范围-17~17 Nm)
+    // 解析力矩 - 字节4-5 (uint16_t, 大端序, 范围-17~17 Nm)
     uint16_t raw_torque = (data[4] << 8) | data[5];
     motor->t = uint_to_float(raw_torque, T_MIN, T_MAX, 16);
 
-    // 解析温度 - 字节10-11 (uint16_t, 大端序, 单位0.1°C)
+    // 解析温度 - 字节6-7 (uint16_t, 大端序, 单位0.1°C)
     uint16_t raw_temp = (data[6] << 8) | data[7];
     motor->temp = (int16_t)(raw_temp / 10);
 
@@ -267,6 +368,14 @@ static void parse_can_frame(const uint8_t* can_payload) {
     if (data_callback) {
         data_callback(motor);
     }
+
+    // ========== 设置数据就绪事件位（用于同步等待） ==========
+    // 根据电机ID设置对应的事件位，通知等待线程数据已就绪
+    // 注意：此函数现在在任务上下文中执行，使用xEventGroupSetBits（非ISR版本）
+    if (motor_data_event_group != NULL) {
+        EventBits_t event_bit = (motor_id == MOTER_1_ID) ? MOTOR1_DATA_READY_BIT : MOTOR2_DATA_READY_BIT;
+        xEventGroupSetBits(motor_data_event_group, event_bit);
+    }
 }
 
 /* ========================================================================
@@ -285,7 +394,7 @@ void Motor_Enable(MI_Motor* motor) {
     frame.data = MASTER_ID; // 使用MASTER_ID
     memset(frame.payload, 0, sizeof(frame.payload)); // Data payload is all zeros for enable command
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d enabled", motor->id);
 }
 
@@ -305,7 +414,7 @@ void Motor_Reset(MI_Motor* motor, uint8_t clear_error) {
         frame.payload[0] = 1;
     }
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d reset", motor->id);
 }
 
@@ -322,7 +431,7 @@ void Motor_Set_Zero(MI_Motor* motor) {
     memset(frame.payload, 0, sizeof(frame.payload));
     frame.payload[0] = 1;
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d set zero position", motor->id);
 }
 
@@ -379,7 +488,7 @@ void Change_Mode(MI_Motor* motor, uint8_t mode) {
     float mode_float = (float)mode;
     memcpy(&frame.payload[4], &mode_float, sizeof(float));
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
 
     ESP_LOGI(TAG, "Change_Mode: 电机%d 设置为模式%d", motor->id, mode);
 }
@@ -406,7 +515,7 @@ void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value) {
     // Parameter value (float, little-endian)
     memcpy(&frame.payload[4], &value, sizeof(float));
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
 }
 
 /**
@@ -431,7 +540,7 @@ void Motor_SetReporting(MI_Motor* motor, bool enable) {
     frame.payload[6] = enable ? 0x01 : 0x00; // 0x00关闭, 0x01开启
     frame.payload[7] = 0x00; // 保留位
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
 }
 
 /**
@@ -471,16 +580,20 @@ void Motor_ControlMode(MI_Motor* motor, float torque, float position, float spee
     frame.payload[6] = (kd_cmd >> 8) & 0xFF;     // Kd高字节
     frame.payload[7] = kd_cmd & 0xFF;            // Kd低字节
 
-    UART_Send_Frame(&frame);
+    TWAI_Send_Frame(&frame);
 }
 /**
- * @brief MIT运控模式同步发送并接收反馈
- * @details 发送控制指令后，主动接收并解析反馈数据，类似Unitree的sendRecv
- *          工作流程：
- *          1. 发送MIT运控模式控制指令
- *          2. 等待UART TX完成
- *          3. 直接读取UART接收的12字节CAN帧
- *          4. 调用parse_can_frame解析数据并更新motors[]数组
+ * @brief MIT运控模式同步发送并接收反馈（TWAI事件同步模式）
+ * @details 同步通信流程：
+ *          1. 清除对应电机的数据就绪事件位
+ *          2. 调用Motor_ControlMode发送控制指令
+ *          3. 等待TWAI中断回调设置数据就绪事件位（超时10ms）
+ *          4. 返回成功或超时错误
+ *
+ *          数据更新机制：
+ *          - 电机反馈通过TWAI中断回调异步接收
+ *          - 回调函数解析数据后更新motors[]数组并设置事件位
+ *          - 本函数通过事件组同步等待，确保返回时数据已更新
  *
  * @param motor 指向电机结构体的指针
  * @param torque 前馈力矩（Nm），范围：-17 ~ 17Nm
@@ -488,26 +601,47 @@ void Motor_ControlMode(MI_Motor* motor, float torque, float position, float spee
  * @param speed 目标速度（rad/s），范围：-44 ~ 44rad/s
  * @param kp 位置增益，范围：0 ~ 500
  * @param kd 阻尼增益，范围：0 ~ 5
- * @return 0 成功, -1 失败
+ * @return 0 成功接收到反馈数据，-1 超时或发送失败
  */
 int Motor_ControlMode_SendRecv(MI_Motor* motor, float torque, float position, float speed, float kp, float kd) {
-    // 1. 发送控制指令
+    if (motor_data_event_group == NULL) {
+        ESP_LOGE(TAG, "Motor_ControlMode_SendRecv: 事件组未初始化！");
+        return -1;
+    }
+
+    // 确定要等待的事件位（电机1或电机2）
+    EventBits_t event_bit = (motor->id == MOTER_1_ID) ? MOTOR1_DATA_READY_BIT : MOTOR2_DATA_READY_BIT;
+
+    // 清除对应电机的事件位，准备接收新数据
+    xEventGroupClearBits(motor_data_event_group, event_bit);
+
+    // 发送控制指令
     Motor_ControlMode(motor, torque, position, speed, kp, kd);
 
-    // 2. 等待TX FIFO清空
-    uart_wait_tx_done(RS01_UART_NUM, pdMS_TO_TICKS(10));
+    // 等待数据就绪事件（超时时间由MOTOR_DATA_TIMEOUT_MS定义）
+    EventBits_t bits = xEventGroupWaitBits(
+        motor_data_event_group,           // 事件组句柄
+        event_bit,                        // 要等待的事件位
+        pdTRUE,                           // 返回前清除事件位
+        pdFALSE,                          // 不需要等待所有位
+        pdMS_TO_TICKS(MOTOR_DATA_TIMEOUT_MS)  // 超时时间10ms
+    );
 
-    // 3. 直接读取UART数据（12字节CAN帧）
-    uint8_t rx_buffer[CAN_RAW_FRAME_LENGTH];
-    int rx_bytes = uart_read_bytes(RS01_UART_NUM, rx_buffer, CAN_RAW_FRAME_LENGTH, pdMS_TO_TICKS(10));
-
-    if (rx_bytes == CAN_RAW_FRAME_LENGTH) {
-        // 4. 直接调用parse_can_frame解析数据
-        parse_can_frame(rx_buffer);
+    // 检查是否成功接收到数据
+    if (bits & event_bit) {
+        // 数据已就绪，motors[]数组已被中断回调更新
         return 0;
     } else {
-        // 接收超时或数据不完整
-        ESP_LOGW(TAG, "接收数据失败: 期望%d字节, 实际接收%d字节", CAN_RAW_FRAME_LENGTH, rx_bytes);
+        // 超时，未收到电机反馈 - 限制打印频率为5秒一次
+        static TickType_t lastTimeoutPrint[2] = {0, 0};  // 每个电机独立计时
+        static const TickType_t TIMEOUT_PRINT_INTERVAL = pdMS_TO_TICKS(5000);  // 5秒
+        TickType_t currentTime = xTaskGetTickCount();
+        int motorIndex = (motor->id == MOTER_1_ID) ? 0 : 1;
+
+        if (currentTime - lastTimeoutPrint[motorIndex] >= TIMEOUT_PRINT_INTERVAL) {
+            ESP_LOGW(TAG, "Motor_ControlMode_SendRecv: 电机%d反馈超时", motor->id);
+            lastTimeoutPrint[motorIndex] = currentTime;
+        }
         return -1;
     }
 }
