@@ -28,9 +28,9 @@ static httpd_handle_t web_server = NULL;
 #define MOTOR_ID_1      0x01
 #define MOTOR_ID_2      0x02
 #define UART_PORT_NUM   UART_NUM_2
-#define UART_TX_PIN     GPIO_NUM_13
-#define UART_RX_PIN     GPIO_NUM_12
-// #define MAX485_RE_DE_PIN GPIO_NUM_6  // 纯串口模式不需要DE/RE控制引脚
+#define UART_TX_PIN     GPIO_NUM_12
+#define UART_RX_PIN     GPIO_NUM_13
+#define MAX485_RE_DE_PIN GPIO_NUM_11  // DE/RE控制引脚，拉高进入自动流控模式
 #define UART_BAUD_RATE  4000000
 
 UnitreeMotorDriver motor_driver;
@@ -421,6 +421,17 @@ extern "C" void app_main() {
     register_motor_param_handler(handle_web_motor_param);
     register_motor_param_getter(handle_web_get_motor_param);
     ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
+
+    // 配置MAX485 DE/RE引脚为输出并拉高，进入自动流控模式
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << MAX485_RE_DE_PIN);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+    gpio_set_level(MAX485_RE_DE_PIN, 1);  // 拉高DE/RE引脚
+    ESP_LOGI(TAG, "MAX485 DE/RE引脚已配置为高电平(自动流控模式)");
 
     // 初始化电机驱动
     if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {

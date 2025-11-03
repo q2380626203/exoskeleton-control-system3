@@ -274,7 +274,6 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
     }
 
     uint8_t tx_buffer[GO_M8010_6_CMD_LENGTH];
-    uint8_t rx_buffer[GO_M8010_6_DATA_LENGTH];
 
     // 打包电机命令
     size_t packed_len = pack_motor_cmd_go_m8010_6(cmd, tx_buffer);
@@ -289,39 +288,48 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
     // 等待发送完成
     uart_wait_tx_idle_polling(_uart_num);
 
-    // 接收响应 - 健壮的数据包解析
-    uint8_t temp_buffer[GO_M8010_6_DATA_LENGTH + 16];
+    // 接收响应 - 健壮的数据包解析（可处理混杂的回环数据）
+    uint8_t temp_buffer[GO_M8010_6_DATA_LENGTH + 32];  // 增大缓冲区以应对混杂数据
+    uint8_t rx_buffer[GO_M8010_6_DATA_LENGTH];
     int total_bytes = 0;
 
-    for (int attempts = 0; attempts < 3; attempts++) {
+    // 多次尝试接收，累积数据
+    for (int attempts = 0; attempts < 5; attempts++) {  // 增加到5次尝试
         int rx_bytes = uart_read_bytes(_uart_num, temp_buffer + total_bytes,
                                       sizeof(temp_buffer) - total_bytes, pdMS_TO_TICKS(2));
         if (rx_bytes > 0) {
             total_bytes += rx_bytes;
 
-            // 查找帧头位置 (0xFD 0xEE)
-            for (int i = 0; i <= total_bytes - GO_M8010_6_DATA_LENGTH; i++) {
-                if (temp_buffer[i] == GO_M8010_6_DATA_HEADER_BYTE1 &&
-                    temp_buffer[i + 1] == GO_M8010_6_DATA_HEADER_BYTE2) {
+            // 如果累积数据足够多，尝试查找帧头
+            if (total_bytes >= GO_M8010_6_DATA_LENGTH) {
+                // 查找帧头位置 (0xFD 0xEE)
+                for (int i = 0; i <= total_bytes - GO_M8010_6_DATA_LENGTH; i++) {
+                    if (temp_buffer[i] == GO_M8010_6_DATA_HEADER_BYTE1 &&
+                        temp_buffer[i + 1] == GO_M8010_6_DATA_HEADER_BYTE2) {
 
-                    memcpy(rx_buffer, &temp_buffer[i], GO_M8010_6_DATA_LENGTH);
+                        // 找到帧头，提取16字节数据
+                        memcpy(rx_buffer, &temp_buffer[i], GO_M8010_6_DATA_LENGTH);
 
-                    // 解析数据
-                    if (unpack_motor_data_go_m8010_6(rx_buffer, data)) {
-                        return ESP_OK;
-                    } else {
-                        ESP_LOGW(TAG_MOTOR, "数据解析失败，继续查找");
-                        break;
+                        // 尝试解析数据（包含CRC校验）
+                        if (unpack_motor_data_go_m8010_6(rx_buffer, data)) {
+                            // 解析成功，返回
+                            return ESP_OK;
+                        } else {
+                            // CRC校验失败，继续查找下一个可能的帧头
+                            ESP_LOGD(TAG_MOTOR, "在位置%d找到帧头但CRC校验失败，继续查找", i);
+                        }
                     }
                 }
             }
         } else {
-            break;
+            break;  // 没有更多数据，退出接收循环
         }
     }
 
+    // 所有尝试都失败
     if (total_bytes > 0) {
-        ESP_LOGW(TAG_MOTOR, "未找到有效帧头，接收了%d字节数据", total_bytes);
+        ESP_LOGW(TAG_MOTOR, "未找到有效数据帧，接收了%d字节", total_bytes);
+        // 打印原始数据用于调试
         printf("原始数据: ");
         for (int i = 0; i < total_bytes && i < 32; i++) {
             printf("0x%02X ", temp_buffer[i]);
