@@ -85,6 +85,15 @@ typedef esp_err_t (*motor_param_handler_t)(int motor, const char *param_name, fl
 typedef esp_err_t (*motor_param_getter_t)(int motor, const char *param_name, float *value);
 
 /**
+ * @brief 状态获取回调函数类型
+ *
+ * @param state_json 输出JSON字符串的缓冲区
+ * @param max_len 缓冲区最大长度
+ * @return esp_err_t 处理结果
+ */
+typedef esp_err_t (*state_getter_t)(char *state_json, size_t max_len);
+
+/**
  * @brief 注册命令处理回调函数
  *
  * @param handler 命令处理函数指针
@@ -111,6 +120,13 @@ void register_motor_param_handler(motor_param_handler_t handler);
  * @param getter 电机参数读取函数指针
  */
 void register_motor_param_getter(motor_param_getter_t getter);
+
+/**
+ * @brief 注册状态获取回调函数
+ *
+ * @param getter 状态获取函数指针
+ */
+void register_state_getter(state_getter_t getter);
 
 #ifdef __cplusplus
 }

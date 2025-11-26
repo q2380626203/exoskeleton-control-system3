@@ -19,7 +19,7 @@ static const char *TAG = "SpeedFollow";
 SpeedFollowMode::SpeedFollowMode()
     : _state(SPEED_FOLLOW_IDLE), _phase_start_time(0),
       _active_motor(1), _lifting_motor(0), _working_start_time(0),
-      _auto_switch_enabled(false), _is_active(false), _is_stationary(false), _is_button_triggered(false), _is_buffer_triggered(false),
+      _auto_switch_enabled(false), _is_active(false), _is_motor_control_enabled(true), _is_stationary(false), _is_button_triggered(false), _is_buffer_triggered(false),
       _threshold_value(10.0f), _first_trigger_detected(false),
       _triggered_channel(0), _waiting_start_time(0),
       _captured_velocity(0.0f), _phase1_timeout_ms(500), _phase2_timeout_ms(350), _velocity_scale(0.8f), _phase2_vel_threshold(0.5f),
@@ -48,6 +48,11 @@ SpeedFollowMode::SpeedFollowMode()
  * @note 只有在对应电机的指针有效时才会更新参数
  */
 void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd) {
+    // 如果电机控制未启用，则不更新电机参数（状态机继续运行但不控制电机）
+    if (!_is_motor_control_enabled) {
+        return;
+    }
+
     if (_global_mutex) {
         if (xSemaphoreTake(_global_mutex, portMAX_DELAY) == pdTRUE) {
             if (motor_id == 1 && _motor1_mode && _motor1_pos && _motor1_vel && _motor1_t && _motor1_kp && _motor1_kd) {
@@ -89,7 +94,7 @@ void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, 
  */
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
-    _config_motor1.trigger_speed = 2.0f;   // 触发速度：+0.75 rad/s (电机1)
+    _config_motor1.trigger_speed = 5.0f;   // 触发速度：+0.75 rad/s (电机1)
     _config_motor1.phase1_duration_ms = 500;
     _config_motor1.phase2_duration_ms = 350;
     _config_motor1.waiting_duration_ms = 300;  // 等待时间
@@ -120,7 +125,7 @@ void SpeedFollowMode::init() {
     _config_motor1.idle.kd = 0.0f;
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
-    _config_motor2.trigger_speed = -2.0f;  // 触发速度：-0.75 rad/s (电机2)
+    _config_motor2.trigger_speed = -5.0f;  // 触发速度：-0.75 rad/s (电机2)
     _config_motor2.phase1_duration_ms = 500;
     _config_motor2.phase2_duration_ms = 350;
     _config_motor2.waiting_duration_ms = 300;  // 等待时间：300ms
@@ -698,4 +703,54 @@ void SpeedFollowMode::startButtonWaiting() {
     _is_stationary = false;
     _state = SPEED_FOLLOW_BUTTON_WAITING;
     ESP_LOGI(TAG, "🔘 按键触发：进入BUTTON_WAITING状态，同时检测两个电机速度");
+}
+
+/**
+ * @brief Web接口：调整助力（增加或减少phase1.torque）
+ * @param increase true=增加助力，false=减少助力
+ * @return 调整后的电机1助力值（用于语音播报）
+ * @note 与GPIO3/GPIO5按键逻辑相同，调整电机1和电机2的phase1.torque
+ *       电机1范围：0 ~ 2.0，电机2范围：-2.0 ~ 0
+ *       步长：0.1
+ */
+float SpeedFollowMode::adjustTorque(bool increase) {
+    const float TORQUE_STEP = 0.1f;
+    const float MOTOR1_TORQUE_MIN = 0.0f;
+    const float MOTOR1_TORQUE_MAX = 2.0f;
+    const float MOTOR2_TORQUE_MIN = -2.0f;
+    const float MOTOR2_TORQUE_MAX = 0.0f;
+
+    if (increase) {
+        // 增加助力
+        float new_torque1 = _config_motor1.phase1.torque + TORQUE_STEP;
+        if (new_torque1 > MOTOR1_TORQUE_MAX) {
+            new_torque1 = MOTOR1_TORQUE_MAX;
+        }
+        _config_motor1.phase1.torque = new_torque1;
+
+        float new_torque2 = _config_motor2.phase1.torque - TORQUE_STEP;
+        if (new_torque2 < MOTOR2_TORQUE_MIN) {
+            new_torque2 = MOTOR2_TORQUE_MIN;
+        }
+        _config_motor2.phase1.torque = new_torque2;
+
+        ESP_LOGI(TAG, "[WEB] 助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+        return new_torque1;
+    } else {
+        // 减少助力
+        float new_torque1 = _config_motor1.phase1.torque - TORQUE_STEP;
+        if (new_torque1 < MOTOR1_TORQUE_MIN) {
+            new_torque1 = MOTOR1_TORQUE_MIN;
+        }
+        _config_motor1.phase1.torque = new_torque1;
+
+        float new_torque2 = _config_motor2.phase1.torque + TORQUE_STEP;
+        if (new_torque2 > MOTOR2_TORQUE_MAX) {
+            new_torque2 = MOTOR2_TORQUE_MAX;
+        }
+        _config_motor2.phase1.torque = new_torque2;
+
+        ESP_LOGI(TAG, "[WEB] 助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+        return new_torque1;
+    }
 }

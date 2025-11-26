@@ -19,6 +19,7 @@ static command_handler_t g_command_handler = NULL;
 static param_handler_t g_param_handler = NULL;
 static motor_param_handler_t g_motor_param_handler = NULL;
 static motor_param_getter_t g_motor_param_getter = NULL;
+static state_getter_t g_state_getter = NULL;
 
 /* WiFi事件处理 */
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -323,6 +324,23 @@ static esp_err_t get_motor_params_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* HTTP GET处理函数 - 状态机状态API */
+static esp_err_t state_get_handler(httpd_req_t *req)
+{
+    if (g_state_getter != NULL) {
+        char state_json[256];
+        if (g_state_getter(state_json, sizeof(state_json)) == ESP_OK) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, state_json);
+            return ESP_OK;
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Cannot get state\"}");
+    return ESP_OK;
+}
+
 /* URI处理器配置 */
 static const httpd_uri_t root = {
     .uri       = "/",
@@ -366,6 +384,13 @@ static const httpd_uri_t api_get_motor_params = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t api_state = {
+    .uri       = "/api/state",
+    .method    = HTTP_GET,
+    .handler   = state_get_handler,
+    .user_ctx  = NULL
+};
+
 httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -384,6 +409,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &api_motor_params);
         httpd_register_uri_handler(server, &api_get_motor_params);
         httpd_register_uri_handler(server, &api_status);
+        httpd_register_uri_handler(server, &api_state);
 
         ESP_LOGI(TAG, "Web服务器启动成功");
         return server;
@@ -423,4 +449,10 @@ void register_motor_param_getter(motor_param_getter_t getter)
 {
     g_motor_param_getter = getter;
     ESP_LOGI(TAG, "电机参数读取器已注册");
+}
+
+void register_state_getter(state_getter_t getter)
+{
+    g_state_getter = getter;
+    ESP_LOGI(TAG, "状态获取器已注册");
 }

@@ -99,6 +99,30 @@ public:
         _is_active = enabled;
     }
 
+    // Web接口：启用/禁用电机控制（关闭时状态机继续运行但不控制电机）
+    void enableMotorControl(bool enabled) {
+        _is_motor_control_enabled = enabled;
+    }
+
+    // Web接口：获取当前状态
+    speed_follow_state_t getState() const {
+        return _state;
+    }
+
+    // Web接口：获取当前活动电机（1或2）
+    uint8_t getActiveMotor() const {
+        return _active_motor;
+    }
+
+    // Web接口：获取当前抬腿电机（1或2，0表示无）
+    uint8_t getLiftingMotor() const {
+        return _lifting_motor;
+    }
+
+    // Web接口：调整助力（增加或减少phase1.torque）
+    // 返回调整后的电机1助力值（用于语音播报）
+    float adjustTorque(bool increase);
+
     // 检查是否处于静止状态（用于按键触发语音播放）
     bool isStationary() const { return _is_stationary; }
 
@@ -125,6 +149,7 @@ private:
     // 自动开关控制
     bool _auto_switch_enabled;      // 自动开关是否启用
     bool _is_active;                // 速度跟随是否激活
+    bool _is_motor_control_enabled; // 电机控制是否启用（关闭时状态机运行但不控制电机）
     bool _is_stationary;            // 是否处于静止状态（用于按键触发语音播放）
     bool _is_button_triggered;      // 是否为按键触发模式
     bool _is_buffer_triggered;      // 是否为缓存区触发激活（用于播放助力开启语音）

@@ -58,19 +58,78 @@ SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
 static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
 
 /**
+ * @brief 将浮点数转换为中文数字字符串（用于语音播报）
+ * @param value 浮点数值（范围 0.0 ~ 2.0）
+ * @return 中文数字字符串
+ * @note 将浮点数乘以10后转换为整数，然后转换为对应的中文数字
+ *       例如：0.6 -> "六", 0.7 -> "七", 1.5 -> "十五", 2.0 -> "二十"
+ */
+static const char* float_to_chinese_number(float value) {
+    // 将浮点数乘以10并四舍五入转换为整数
+    int num = (int)(value * 10 + 0.5f);
+
+    // 限制范围在 0-20
+    if (num < 0) num = 0;
+    if (num > 20) num = 20;
+
+    // 中文数字映射表
+    static const char* chinese_numbers[] = {
+        "零",   // 0
+        "一",   // 1
+        "二",   // 2
+        "三",   // 3
+        "四",   // 4
+        "五",   // 5
+        "六",   // 6
+        "七",   // 7
+        "八",   // 8
+        "九",   // 9
+        "十",   // 10
+        "十一", // 11
+        "十二", // 12
+        "十三", // 13
+        "十四", // 14
+        "十五", // 15
+        "十六", // 16
+        "十七", // 17
+        "十八", // 18
+        "十九", // 19
+        "二十"  // 20
+    };
+
+    return chinese_numbers[num];
+}
+
+/**
  * @brief Web服务器命令处理回调
- * @param cmd 接收到的命令字符串 ("start" 或 "stop")
+ * @param cmd 接收到的命令字符串 ("start", "stop", "assist_up", "assist_down")
  * @return ESP_OK 成功, ESP_FAIL 未知命令
  */
 extern "C" esp_err_t handle_web_command(const char *cmd) {
     if (strcmp(cmd, "start") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到启动命令");
-        speed_follow.enable(true);
+        ESP_LOGI(TAG, "[WEB] 接收到启动命令 - 启用电机控制");
+        speed_follow.enableMotorControl(true);
         return ESP_OK;
     }
     else if (strcmp(cmd, "stop") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到停止命令");
-        speed_follow.enable(false);
+        ESP_LOGI(TAG, "[WEB] 接收到停止命令 - 禁用电机控制（状态机继续运行）");
+        speed_follow.enableMotorControl(false);
+        return ESP_OK;
+    }
+    else if (strcmp(cmd, "assist_up") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到增加助力命令");
+        float new_torque = speed_follow.adjustTorque(true);
+        // 播放语音：助力值
+        const char* torque_text = float_to_chinese_number(new_torque);
+        voice_speak(&voice_module, torque_text);
+        return ESP_OK;
+    }
+    else if (strcmp(cmd, "assist_down") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到减少助力命令");
+        float new_torque = speed_follow.adjustTorque(false);
+        // 播放语音：助力值
+        const char* torque_text = float_to_chinese_number(new_torque);
+        voice_speak(&voice_module, torque_text);
         return ESP_OK;
     }
 
@@ -211,6 +270,44 @@ extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_nam
         *value = config->phase2.kd;
     }
     else {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Web服务器状态获取回调
+ * @param state_json 输出JSON字符串的缓冲区
+ * @param max_len 缓冲区最大长度
+ * @return ESP_OK 成功, ESP_FAIL 失败
+ */
+extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
+    // 状态机中文映射
+    const char* state_names[] = {
+        "空闲",           // SPEED_FOLLOW_IDLE
+        "等待触发",        // SPEED_FOLLOW_WAITING
+        "按键等待",        // SPEED_FOLLOW_BUTTON_WAITING
+        "1号电机检测中",   // SPEED_FOLLOW_MOTOR1_WORKING
+        "2号电机检测中",   // SPEED_FOLLOW_MOTOR2_WORKING
+        "抬腿阶段",        // SPEED_FOLLOW_PHASE1
+        "压腿阶段"         // SPEED_FOLLOW_PHASE2
+    };
+
+    speed_follow_state_t current_state = speed_follow.getState();
+    uint8_t active_motor = speed_follow.getActiveMotor();
+    uint8_t lifting_motor = speed_follow.getLiftingMotor();
+
+    // 获取电机1的助力值（phase1.torque）
+    speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
+    float torque_value = motor1_config->phase1.torque;
+
+    int written = snprintf(state_json, max_len,
+        "{\"state\":\"%s\",\"state_id\":%d,\"active_motor\":%d,\"lifting_motor\":%d,\"torque\":%.2f}",
+        state_names[current_state], current_state, active_motor, lifting_motor, torque_value);
+
+    if (written < 0 || written >= (int)max_len) {
+        ESP_LOGW(TAG, "[WEB] 状态JSON生成失败或截断");
         return ESP_FAIL;
     }
 
@@ -420,6 +517,7 @@ extern "C" void app_main() {
     register_param_handler(handle_web_param);
     register_motor_param_handler(handle_web_motor_param);
     register_motor_param_getter(handle_web_get_motor_param);
+    register_state_getter(handle_web_get_state);
     ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
 
     // 配置MAX485 DE/RE引脚为输出并拉高，进入自动流控模式
