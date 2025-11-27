@@ -11,7 +11,8 @@
 5. 可视化理想曲线
 
 使用方法：
-python 4_理想曲线提取.py --input 平地数据_已标注.csv --scene 平地
+python 4_理想曲线提取.py --input 平地数据_已修正.csv --scene 平地
+(或使用已标注文件: python 4_理想曲线提取.py --input 平地数据_已标注.csv --scene 平地)
 """
 
 import pandas as pd

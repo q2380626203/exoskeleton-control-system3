@@ -11,7 +11,8 @@
 5. 保存为训练数据集（NPZ格式）
 
 使用方法：
-python 5_训练数据生成.py --input 平地数据_已标注.csv --scene 平地
+python 5_训练数据生成.py --input 平地数据_已修正.csv --scene 平地
+(或使用已标注文件: python 5_训练数据生成.py --input 平地数据_已标注.csv --scene 平地)
 """
 
 import pandas as pd
