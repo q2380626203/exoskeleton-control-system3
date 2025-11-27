@@ -27,8 +27,7 @@ class 训练数据生成器:
 
     IDLE = 0
     LIFTING = 1
-    TRANSITION = 2
-    PRESSING = 3
+    PRESSING = 2
 
     def __init__(self, df, 电机='m1', 窗口大小=50, 步长=5):
         """
@@ -116,11 +115,10 @@ class 训练数据生成器:
             delta_scale = 0.0
 
             # 如果有理想曲线，计算偏差
-            if 理想曲线 is not None and 当前阶段 in [self.LIFTING, self.TRANSITION, self.PRESSING]:
+            if 理想曲线 is not None and 当前阶段 in [self.LIFTING, self.PRESSING]:
                 # 获取理想速度（这里简化处理，实际需要根据阶段进度）
                 阶段映射 = {
                     self.LIFTING: 'lifting',
-                    self.TRANSITION: 'transition',
                     self.PRESSING: 'pressing'
                 }
                 阶段名 = 阶段映射.get(当前阶段)
@@ -203,8 +201,8 @@ def 生成统计报告(X, y_phase, y_params, 输出文件='训练数据统计.tx
         f.write("-" * 60 + "\n")
         f.write("阶段标签分布\n")
         f.write("-" * 60 + "\n")
-        阶段名称 = {0: '静止', 1: '抬腿', 2: '过渡', 3: '压腿'}
-        for label in range(4):
+        阶段名称 = {0: '静止', 1: '抬腿', 2: '压腿'}
+        for label in range(3):
             count = np.sum(y_phase == label)
             percentage = count / len(y_phase) * 100
             f.write(f"{阶段名称[label]:8s}: {count:6d} ({percentage:5.1f}%)\n")

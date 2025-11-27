@@ -5,14 +5,19 @@
 
 功能：
 1. 加载CSV数据（包含位置和速度信息）
-2. 自动标注运动阶段 (静止/抬腿/过渡/压腿)
+2. 自动标注运动阶段 (静止/抬腿/压腿)
 3. 基于位置和速度双重判断
 4. 区分左腿(m1)和右腿(m2)
-5. 可视化标注结果（位置+速度）
-6. 保存标注后的数据
+5. **重要：右腿(m2)自动反转判断逻辑，因为右腿运动方向与左腿相反**
+6. 可视化标注结果（位置+速度）
+7. 保存标注后的数据
 
 使用方法：
 python 2_数据自动标注.py --input 平地数据.csv --output 平地数据_已标注.csv
+
+注意：
+- 左腿(m1): 速度正向=抬腿，速度负向=压腿
+- 右腿(m2): 速度负向=抬腿，速度正向=压腿（自动反转）
 """
 
 import pandas as pd
@@ -35,29 +40,33 @@ class 运动阶段标注器:
 
     阶段定义：
     0 = IDLE (静止)：速度绝对值 < 阈值，位置变化小
-    1 = LIFTING (抬腿)：速度正向增加 & 位置上升
-    2 = TRANSITION (过渡)：速度从峰值下降到0附近 & 位置平稳
-    3 = PRESSING (压腿)：速度负向增加 & 位置下降
+
+    左腿(m1)标注规则：
+    1 = LIFTING (抬腿)：速度正向 & 位置上升
+    2 = PRESSING (压腿)：速度负向 & 位置下降
+
+    右腿(m2)标注规则（反转）：
+    1 = LIFTING (抬腿)：速度负向 & 位置下降
+    2 = PRESSING (压腿)：速度正向 & 位置上升
+
+    注意：右腿运动方向与左腿相反，标注时自动反转判断逻辑
     """
 
     # 阶段编码
     IDLE = 0
     LIFTING = 1
-    TRANSITION = 2
-    PRESSING = 3
+    PRESSING = 2
 
     阶段名称 = {
         0: '静止',
         1: '抬腿',
-        2: '过渡',
-        3: '压腿'
+        2: '压腿'
     }
 
     阶段颜色 = {
         0: 'gray',
         1: 'green',
-        2: 'orange',
-        3: 'red'
+        2: 'red'
     }
 
     电机名称 = {
@@ -78,7 +87,7 @@ class 运动阶段标注器:
         self.静止位置阈值 = 静止位置阈值
         self.平滑窗口 = 平滑窗口
 
-    def 标注单个电机(self, df, 速度列='m1_vel', 位置列='m1_pos'):
+    def 标注单个电机(self, df, 速度列='m1_vel', 位置列='m1_pos', 反转=False):
         """
         自动标注单个电机的运动阶段（基于速度和位置）
 
@@ -86,6 +95,7 @@ class 运动阶段标注器:
             df: DataFrame
             速度列: 速度数据的列名
             位置列: 位置数据的列名
+            反转: 是否反转抬腿/压腿判断（右腿需要反转，因为运动方向相反）
 
         返回:
             标签数组 (numpy array)
@@ -117,28 +127,35 @@ class 运动阶段标注器:
             if abs(v) < self.静止速度阈值 and abs(p_delta) < self.静止位置阈值:
                 标签[i] = self.IDLE
 
-            # 规则2: 抬腿判断（速度正向 & 加速 & 位置上升）
-            elif v > self.静止速度阈值 and a > 0.05 and p_delta > 0:
-                标签[i] = self.LIFTING
-
-            # 规则3: 过渡判断（速度正向但减速 & 位置变化小）
-            elif v > self.静止速度阈值 and a <= 0.05 and abs(p_delta) < 0.01:
-                标签[i] = self.TRANSITION
-
-            # 规则4: 压腿判断（速度负向 & 位置下降）
-            elif v < -self.静止速度阈值 and p_delta < 0:
-                标签[i] = self.PRESSING
-
-            # 规则5: 负速度但位置变化小（也算过渡）
-            elif v < 0 and abs(p_delta) < 0.01:
-                标签[i] = self.TRANSITION
-
-            # 其他情况：保持上一状态或标为静止
-            else:
-                if i > 0:
-                    标签[i] = 标签[i-1]
+            # 规则2和3: 抬腿/压腿判断（根据反转参数调整）
+            elif not 反转:
+                # 左腿(m1)正常逻辑
+                # 规则2: 抬腿判断（速度正向 & 位置上升）
+                if v > self.静止速度阈值 and p_delta > 0:
+                    标签[i] = self.LIFTING
+                # 规则3: 压腿判断（速度负向 & 位置下降）
+                elif v < -self.静止速度阈值 and p_delta < 0:
+                    标签[i] = self.PRESSING
+                # 其他情况：保持上一状态或标为静止
                 else:
-                    标签[i] = self.IDLE
+                    if i > 0:
+                        标签[i] = 标签[i-1]
+                    else:
+                        标签[i] = self.IDLE
+            else:
+                # 右腿(m2)反转逻辑（运动方向相反）
+                # 规则2: 抬腿判断（速度负向 & 位置下降）
+                if v < -self.静止速度阈值 and p_delta < 0:
+                    标签[i] = self.LIFTING
+                # 规则3: 压腿判断（速度正向 & 位置上升）
+                elif v > self.静止速度阈值 and p_delta > 0:
+                    标签[i] = self.PRESSING
+                # 其他情况：保持上一状态或标为静止
+                else:
+                    if i > 0:
+                        标签[i] = 标签[i-1]
+                    else:
+                        标签[i] = self.IDLE
 
         return 标签
 
@@ -187,12 +204,12 @@ class 运动阶段标注器:
 
         # 标注左腿(m1)
         print(f"  - 标注左腿(m1)...")
-        标签1 = self.标注单个电机(df, 速度列='m1_vel', 位置列='m1_pos')
+        标签1 = self.标注单个电机(df, 速度列='m1_vel', 位置列='m1_pos', 反转=False)
         标签1 = self.后处理优化(标签1)
 
-        # 标注右腿(m2)
-        print(f"  - 标注右腿(m2)...")
-        标签2 = self.标注单个电机(df, 速度列='m2_vel', 位置列='m2_pos')
+        # 标注右腿(m2) - 需要反转，因为右腿运动方向与左腿相反
+        print(f"  - 标注右腿(m2)（反转模式）...")
+        标签2 = self.标注单个电机(df, 速度列='m2_vel', 位置列='m2_pos', 反转=True)
         标签2 = self.后处理优化(标签2)
 
         # 添加标签列
@@ -231,19 +248,27 @@ def 可视化标注结果(df, 输出文件='标注结果可视化.png'):
     标注器 = 运动阶段标注器()
 
     # ========== 左列：左腿(m1) ==========
-    # 图1: 左腿位置曲线
+    # 图1: 左腿位置曲线（按标注颜色分段）
     ax_m1_pos = axes[0, 0]
-    ax_m1_pos.plot(时间, df['m1_pos'], 'b-', linewidth=0.8, alpha=0.7)
+    for label, name in 标注器.阶段名称.items():
+        mask = df['m1_label'] == label
+        ax_m1_pos.scatter(时间[mask], df.loc[mask, 'm1_pos'],
+                         c=标注器.阶段颜色[label], s=3, label=name, alpha=0.7)
     ax_m1_pos.set_ylabel('位置 (rad)', fontsize=12)
     ax_m1_pos.set_title('左腿(m1) 位置曲线', fontsize=14, fontweight='bold')
+    ax_m1_pos.legend(loc='upper right', fontsize=10)
     ax_m1_pos.grid(True, alpha=0.3)
 
-    # 图2: 左腿速度曲线
+    # 图2: 左腿速度曲线（按标注颜色分段）
     ax_m1_vel = axes[1, 0]
-    ax_m1_vel.plot(时间, df['m1_vel'], 'g-', linewidth=0.8, alpha=0.7)
+    for label, name in 标注器.阶段名称.items():
+        mask = df['m1_label'] == label
+        ax_m1_vel.scatter(时间[mask], df.loc[mask, 'm1_vel'],
+                         c=标注器.阶段颜色[label], s=3, label=name, alpha=0.7)
     ax_m1_vel.set_ylabel('速度 (rad/s)', fontsize=12)
     ax_m1_vel.set_title('左腿(m1) 速度曲线', fontsize=14, fontweight='bold')
     ax_m1_vel.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+    ax_m1_vel.legend(loc='upper right', fontsize=10)
     ax_m1_vel.grid(True, alpha=0.3)
 
     # 图3: 左腿标注结果（彩色散点）
@@ -262,25 +287,33 @@ def 可视化标注结果(df, 输出文件='标注结果可视化.png'):
     ax_m1_timeline.plot(时间, df['m1_label'], 'k-', linewidth=1.0)
     ax_m1_timeline.set_ylabel('阶段', fontsize=12)
     ax_m1_timeline.set_xlabel('时间 (秒)', fontsize=12)
-    ax_m1_timeline.set_yticks([0, 1, 2, 3])
-    ax_m1_timeline.set_yticklabels(['静止', '抬腿', '过渡', '压腿'])
+    ax_m1_timeline.set_yticks([0, 1, 2])
+    ax_m1_timeline.set_yticklabels(['静止', '抬腿', '压腿'])
     ax_m1_timeline.set_title('左腿(m1) 阶段时序', fontsize=12)
     ax_m1_timeline.grid(True, alpha=0.3)
 
     # ========== 右列：右腿(m2) ==========
-    # 图5: 右腿位置曲线
+    # 图5: 右腿位置曲线（按标注颜色分段）
     ax_m2_pos = axes[0, 1]
-    ax_m2_pos.plot(时间, df['m2_pos'], 'b-', linewidth=0.8, alpha=0.7)
+    for label, name in 标注器.阶段名称.items():
+        mask = df['m2_label'] == label
+        ax_m2_pos.scatter(时间[mask], df.loc[mask, 'm2_pos'],
+                         c=标注器.阶段颜色[label], s=3, label=name, alpha=0.7)
     ax_m2_pos.set_ylabel('位置 (rad)', fontsize=12)
     ax_m2_pos.set_title('右腿(m2) 位置曲线', fontsize=14, fontweight='bold')
+    ax_m2_pos.legend(loc='upper right', fontsize=10)
     ax_m2_pos.grid(True, alpha=0.3)
 
-    # 图6: 右腿速度曲线
+    # 图6: 右腿速度曲线（按标注颜色分段）
     ax_m2_vel = axes[1, 1]
-    ax_m2_vel.plot(时间, df['m2_vel'], 'r-', linewidth=0.8, alpha=0.7)
+    for label, name in 标注器.阶段名称.items():
+        mask = df['m2_label'] == label
+        ax_m2_vel.scatter(时间[mask], df.loc[mask, 'm2_vel'],
+                         c=标注器.阶段颜色[label], s=3, label=name, alpha=0.7)
     ax_m2_vel.set_ylabel('速度 (rad/s)', fontsize=12)
     ax_m2_vel.set_title('右腿(m2) 速度曲线', fontsize=14, fontweight='bold')
     ax_m2_vel.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+    ax_m2_vel.legend(loc='upper right', fontsize=10)
     ax_m2_vel.grid(True, alpha=0.3)
 
     # 图7: 右腿标注结果（彩色散点）
@@ -299,8 +332,8 @@ def 可视化标注结果(df, 输出文件='标注结果可视化.png'):
     ax_m2_timeline.plot(时间, df['m2_label'], 'k-', linewidth=1.0)
     ax_m2_timeline.set_ylabel('阶段', fontsize=12)
     ax_m2_timeline.set_xlabel('时间 (秒)', fontsize=12)
-    ax_m2_timeline.set_yticks([0, 1, 2, 3])
-    ax_m2_timeline.set_yticklabels(['静止', '抬腿', '过渡', '压腿'])
+    ax_m2_timeline.set_yticks([0, 1, 2])
+    ax_m2_timeline.set_yticklabels(['静止', '抬腿', '压腿'])
     ax_m2_timeline.set_title('右腿(m2) 阶段时序', fontsize=12)
     ax_m2_timeline.grid(True, alpha=0.3)
 

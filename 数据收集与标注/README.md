@@ -202,9 +202,8 @@ python 5_训练数据生成.py \
 | 阶段ID | 名称 | 速度特征 | 位置特征 | 颜色 |
 |--------|------|---------|---------|------|
 | 0 | 静止 | \|v\| < 2.0 rad/s | \|Δp\| < 0.05 rad | 灰色 |
-| 1 | 抬腿 | v > 2.0 & a > 0 | Δp > 0 (上升) | 绿色 |
-| 2 | 过渡 | v从峰值下降 | Δp ≈ 0 (平稳) | 橙色 |
-| 3 | 压腿 | v < -2.0 & a < 0 | Δp < 0 (下降) | 红色 |
+| 1 | 抬腿 | v > 2.0 | Δp > 0 (上升) | 绿色 |
+| 2 | 压腿 | v < -2.0 | Δp < 0 (下降) | 红色 |
 
 **符号说明**：
 - `v`: 速度 (rad/s)
@@ -247,9 +246,9 @@ static const float ideal_flat_ground_m1_lifting_vel[] = {
 };
 static const uint16_t ideal_flat_ground_m1_lifting_vel_len = 100;
 
-// 过渡阶段理想速度曲线
-static const float ideal_flat_ground_m1_transition_vel[] = {
-    4.567800f, 4.012300f, 3.456700f, ...
+// 压腿阶段理想速度曲线
+static const float ideal_flat_ground_m1_pressing_vel[] = {
+    -0.500000f, -1.234500f, -2.345600f, ...
 };
 // ...
 ```
@@ -263,7 +262,7 @@ data = np.load('训练数据_平地_m1.npz')
 # 特征数组 (N, 50) - 50个速度值的滑动窗口
 X = data['X']
 
-# 阶段标签 (N,) - 0/1/2/3
+# 阶段标签 (N,) - 0/1/2
 y_phase = data['y_phase']
 
 # 参数调整标签 (N, 3) - [delta_torque, delta_kd, delta_scale]
@@ -325,7 +324,6 @@ y_params = data['y_params']
 - 位置曲线是否平滑？
 - 静止阶段速度是否接近0？
 - 抬腿/压腿是否与位置变化一致？
-- 过渡阶段是否正确标注？
 
 ### 3. 常见问题
 
@@ -334,7 +332,7 @@ y_params = data['y_params']
 - 使用交互式工具手动修正
 
 **Q: 找不到完整周期？**
-- 检查是否有完整的 IDLE→LIFTING→TRANSITION→PRESSING→IDLE
+- 检查是否有完整的 IDLE→LIFTING→PRESSING→IDLE
 - 延长采集时间
 - 保持更规律的运动
 

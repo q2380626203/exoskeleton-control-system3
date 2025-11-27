@@ -33,14 +33,12 @@ class 理想曲线提取器:
 
     IDLE = 0
     LIFTING = 1
-    TRANSITION = 2
-    PRESSING = 3
+    PRESSING = 2
 
     阶段名称 = {
         0: '静止',
         1: '抬腿',
-        2: '过渡',
-        3: '压腿'
+        2: '压腿'
     }
 
     def __init__(self, df, 电机='m1'):
@@ -61,7 +59,7 @@ class 理想曲线提取器:
         """
         寻找所有完整的运动周期
 
-        周期定义：IDLE → LIFTING → TRANSITION → PRESSING → IDLE
+        周期定义：IDLE → LIFTING → PRESSING → IDLE
 
         返回:
             周期列表，每个周期是一个包含起始和结束索引的dict
@@ -80,7 +78,7 @@ class 理想曲线提取器:
 
             周期起始 = i
 
-            # 期望序列: IDLE → LIFTING → (TRANSITION/PRESSING任意) → IDLE
+            # 期望序列: IDLE → LIFTING → PRESSING → IDLE
             阶段序列 = []
             当前阶段 = 标签[i]
             阶段起始 = i
@@ -97,7 +95,7 @@ class 理想曲线提取器:
                     阶段起始 = i
 
                     # 检查是否回到IDLE（周期结束）
-                    if 当前阶段 == self.IDLE and len(阶段序列) >= 3:
+                    if 当前阶段 == self.IDLE and len(阶段序列) >= 2:
                         # 找到完整周期
                         周期结束 = i
                         周期列表.append({
@@ -124,7 +122,6 @@ class 理想曲线提取器:
         """
         阶段曲线 = {
             self.LIFTING: [],
-            self.TRANSITION: [],
             self.PRESSING: []
         }
 
@@ -133,7 +130,7 @@ class 理想曲线提取器:
             for 阶段 in 周期['phases']:
                 阶段类型 = 阶段['phase']
 
-                if 阶段类型 in [self.LIFTING, self.TRANSITION, self.PRESSING]:
+                if 阶段类型 in [self.LIFTING, self.PRESSING]:
                     # 提取该阶段的速度数据
                     起始 = 阶段['start']
                     结束 = 阶段['end']
@@ -173,10 +170,10 @@ class 理想曲线提取器:
             理想曲线: 理想曲线dict
             输出文件: 输出图片文件名
         """
-        fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
-        阶段顺序 = [self.LIFTING, self.TRANSITION, self.PRESSING]
-        颜色 = ['green', 'orange', 'red']
+        阶段顺序 = [self.LIFTING, self.PRESSING]
+        颜色 = ['green', 'red']
 
         for idx, 阶段类型 in enumerate(阶段顺序):
             ax = axes[idx]
@@ -228,7 +225,6 @@ class 理想曲线提取器:
 
             阶段映射 = {
                 self.LIFTING: 'lifting',
-                self.TRANSITION: 'transition',
                 self.PRESSING: 'pressing'
             }
 

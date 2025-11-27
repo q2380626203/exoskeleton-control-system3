@@ -38,6 +38,7 @@ class 串口数据采集器:
         self.ser = None
         self.is_running = False
         self.sample_count = 0
+        self.invalid_count = 0  # 无效数据计数
         self.start_time = None
 
         # CSV字段
@@ -69,6 +70,32 @@ class 串口数据采集器:
         except Exception as e:
             print(f"✗ 串口连接失败: {e}")
             return False
+
+    def 验证数据合理性(self, data):
+        """
+        验证数据是否在合理范围内
+
+        返回: True=有效, False=无效
+        """
+        # 位置范围: -50 到 50 rad (约 -2865° 到 2865°)
+        if abs(data['m1_pos']) > 50 or abs(data['m2_pos']) > 50:
+            return False
+
+        # 速度范围: -100 到 100 rad/s (实际电机速度很少超过此值)
+        if abs(data['m1_vel']) > 100 or abs(data['m2_vel']) > 100:
+            return False
+
+        # 力矩范围: -10 到 10 N·m
+        if abs(data['m1_torque']) > 10 or abs(data['m2_torque']) > 10:
+            return False
+
+        # ch6/ch7范围: 0 到 10 (遥控器通道值)
+        if not (0 <= data['ch6_max'] <= 10 and 0 <= data['ch7_max'] <= 10):
+            return False
+        if not (0 <= data['ch6_new'] <= 10 and 0 <= data['ch7_new'] <= 10):
+            return False
+
+        return True
 
     def 解析数据行(self, line):
         """
@@ -104,6 +131,10 @@ class 串口数据采集器:
                 'ch6_new': values[8],
                 'ch7_new': values[9]
             }
+
+            # 验证数据合理性
+            if not self.验证数据合理性(data):
+                return None
 
             return data
         except Exception as e:
@@ -155,9 +186,14 @@ class 串口数据采集器:
                                 if self.sample_count % 100 == 0:
                                     elapsed = time.time() - self.start_time
                                     rate = self.sample_count / elapsed if elapsed > 0 else 0
+                                    invalid_rate = self.invalid_count / (self.sample_count + self.invalid_count) * 100 if (self.sample_count + self.invalid_count) > 0 else 0
                                     print(f"\r已采集: {self.sample_count} 样本 | "
                                           f"速率: {rate:.1f} Hz | "
-                                          f"时长: {elapsed:.1f}s", end='')
+                                          f"时长: {elapsed:.1f}s | "
+                                          f"无效数据: {self.invalid_count} ({invalid_rate:.1f}%)", end='')
+                            elif line.startswith('motors:'):
+                                # 数据格式正确但验证失败
+                                self.invalid_count += 1
                         except UnicodeDecodeError:
                             pass  # 忽略解码错误
 
@@ -166,8 +202,11 @@ class 串口数据采集器:
 
         self.is_running = False
         elapsed = time.time() - self.start_time
+        total_packets = self.sample_count + self.invalid_count
+        invalid_rate = self.invalid_count / total_packets * 100 if total_packets > 0 else 0
         print(f"\n\n采集完成:")
-        print(f"  总样本数: {self.sample_count}")
+        print(f"  有效样本数: {self.sample_count}")
+        print(f"  无效样本数: {self.invalid_count} ({invalid_rate:.2f}%)")
         print(f"  总时长: {elapsed:.1f}秒")
         print(f"  平均采样率: {self.sample_count/elapsed:.1f} Hz")
         print(f"  保存到: {self.output_file}")
