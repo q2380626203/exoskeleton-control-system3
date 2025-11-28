@@ -154,7 +154,7 @@ static void button_detector_update(ButtonDetector* detector) {
             if (detector->last_stable_state == BUTTON_STATE_RELEASED &&
                 detector->current_state == BUTTON_STATE_PRESSED) {
 
-                ESP_LOGI(TAG, "按键按下 GPIO%d", detector->gpio_pin);
+                // ESP_LOGI(TAG, "按键按下 GPIO%d", detector->gpio_pin);
 
                 // 触发对应的回调
                 if (detector->gpio_pin == BUTTON_ASSIST_UP_PIN && on_assist_up_pressed) {
@@ -192,9 +192,9 @@ static void switch_detector_update(SwitchDetector* detector) {
 
             // 检测开关状态切换
             if (detector->current_state != detector->last_state) {
-                ESP_LOGI(TAG, "开关切换 GPIO%d: %s",
-                         detector->gpio_pin,
-                         detector->current_state == SWITCH_STATE_ON ? "ON" : "OFF");
+                // ESP_LOGI(TAG, "开关切换 GPIO%d: %s",
+                //          detector->gpio_pin,
+                //          detector->current_state == SWITCH_STATE_ON ? "ON" : "OFF");
 
                 // 触发回调
                 if (on_power_switch_changed) {
@@ -276,7 +276,7 @@ static void default_assist_up_callback(gpio_num_t pin) {
     }
     motor2_config->phase1.torque = new_torque2;
 
-    ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+    // ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
 
     // 播放电机1的力矩绝对值（中文数字）
     const char* torque_text = float_to_chinese_number(new_torque1);
@@ -309,7 +309,7 @@ static void default_assist_down_callback(gpio_num_t pin) {
     }
     motor2_config->phase1.torque = new_torque2;
 
-    ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+    // ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
 
     // 播放电机1的力矩绝对值（中文数字）
     const char* torque_text = float_to_chinese_number(new_torque1);
@@ -326,12 +326,12 @@ static void default_assist_down_callback(gpio_num_t pin) {
  */
 static void default_power_switch_callback(gpio_num_t pin, SwitchState new_state) {
     if (new_state == SWITCH_STATE_ON) {
-        ESP_LOGI(TAG, "助力启动");
+        // ESP_LOGI(TAG, "助力启动");
         voice_speak(&voice_module, "助力启动");
         // 启动按键触发模式
         speed_follow.startButtonWaiting();
     } else {
-        ESP_LOGI(TAG, "助力关闭");
+        // ESP_LOGI(TAG, "助力关闭");
         voice_speak(&voice_module, "助力关闭");
     }
 }
@@ -393,14 +393,14 @@ void button_detector_task(void* param) {
 
         // 检测缓存区触发开启标志并播放语音
         if (speed_follow.isBufferTriggered()) {
-            ESP_LOGI(TAG, "检测到缓存区触发开启，播放语音提示");
+            // ESP_LOGI(TAG, "检测到缓存区触发开启，播放语音提示");
             voice_speak(&voice_module, "助力开启");
             speed_follow.clearBufferTriggeredFlag(); // 清除标志，避免重复播放
         }
 
         // 检测静止状态并播放语音
         if (speed_follow.isStationary()) {
-            ESP_LOGI(TAG, "检测到静止状态，播放语音提示");
+            // ESP_LOGI(TAG, "检测到静止状态，播放语音提示");
             voice_speak(&voice_module, "助力停止");
             speed_follow.clearStationaryFlag(); // 清除标志，避免重复播放
         }

@@ -109,13 +109,13 @@ class TFLite转换器:
 
     def 转换为TFLite_INT8量化(self, 代表性数据集, 输出文件='motion_ai_model_quant.tflite'):
         """
-        转换为INT8量化TFLite模型
+        转换为INT8量化TFLite模型（完全量化，兼容TFLite Micro）
 
         参数:
             代表性数据集: 用于量化的代表性数据（生成器函数）
             输出文件: 输出TFLite文件名
         """
-        print("\n转换为INT8量化TFLite模型...")
+        print("\n转换为INT8量化TFLite模型（完全量化）...")
 
         # 创建TFLite转换器
         converter = tf.lite.TFLiteConverter.from_keras_model(self.keras_model)
@@ -126,18 +126,18 @@ class TFLite转换器:
         # 设置代表性数据集（用于量化校准）
         converter.representative_dataset = 代表性数据集
 
-        # 设置支持的操作类型（INT8量化）
-        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-
-        # 设置输入输出类型为INT8
-        converter.inference_input_type = tf.int8
-        converter.inference_output_type = tf.int8
+        # ⚠️ 关键修改：完全INT8量化，兼容TFLite Micro
+        # 不设置 target_spec.supported_ops，让TFLite自动选择
+        # 不设置 inference_input_type 和 inference_output_type
+        # 这样会生成完全量化的模型，而不是混合精度模型
 
         # 转换
         try:
             self.tflite_quant_model = converter.convert()
+            print("✓ 完全量化成功（兼容TFLite Micro）")
         except Exception as e:
-            print(f"⚠ INT8量化失败，回退到动态范围量化: {e}")
+            print(f"⚠ 完全量化失败: {e}")
+            print("  尝试动态范围量化...")
             # 回退到动态范围量化
             converter = tf.lite.TFLiteConverter.from_keras_model(self.keras_model)
             converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -271,7 +271,7 @@ def 创建代表性数据集生成器(X_data, 样本数=100):
     创建代表性数据集生成器（用于量化）
 
     参数:
-        X_data: 输入数据
+        X_data: 输入数据 (形状: [N, 50, 1])
         样本数: 使用的样本数量
 
     返回:
@@ -281,8 +281,14 @@ def 创建代表性数据集生成器(X_data, 样本数=100):
         # 随机选择样本
         indices = np.random.choice(len(X_data), min(样本数, len(X_data)), replace=False)
         for i in indices:
+            # 确保数据形状为 [1, 50, 1]
+            sample = X_data[i:i+1].astype(np.float32)
+            # 验证形状
+            if len(sample.shape) == 2:
+                # 如果是 [1, 50]，添加通道维度 -> [1, 50, 1]
+                sample = sample.reshape(1, 50, 1)
             # TFLite期望输入是一个列表
-            yield [X_data[i:i+1].astype(np.float32)]
+            yield [sample]
 
     return representative_dataset
 

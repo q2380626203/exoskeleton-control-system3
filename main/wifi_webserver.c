@@ -27,12 +27,12 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 {
     if (event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
-        ESP_LOGI(TAG, "客户端连接，MAC地址:" MACSTR ", AID=%d",
-                 MAC2STR(event->mac), event->aid);
+        // ESP_LOGI(TAG, "客户端连接，MAC地址:" MACSTR ", AID=%d",
+        //          MAC2STR(event->mac), event->aid);
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
-        ESP_LOGI(TAG, "客户端断开连接，MAC地址:" MACSTR ", AID=%d",
-                 MAC2STR(event->mac), event->aid);
+        // ESP_LOGI(TAG, "客户端断开连接，MAC地址:" MACSTR ", AID=%d",
+        //          MAC2STR(event->mac), event->aid);
     }
 }
 
@@ -98,6 +98,13 @@ esp_err_t wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    // 降低WiFi发射功率以减少电流消耗，防止掉电重启
+    // 必须在esp_wifi_start()之后调用
+    // 范围: 8 (2dBm, 最低) 到 78 (19.5dBm, 最高)
+    // 默认值通常为78 (19.5dBm)，这里设置为40 (10dBm) 以降低功耗
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(40)); // 10dBm，约为默认功率的一半
+    ESP_LOGI(TAG, "WiFi发射功率已设置为10dBm (降低功耗模式)");
+
     ESP_LOGI(TAG, "WiFi热点已启动");
     ESP_LOGI(TAG, "SSID: %s", WIFI_AP_SSID);
     ESP_LOGI(TAG, "密码: %s", WIFI_AP_PASSWORD);
@@ -129,11 +136,11 @@ static esp_err_t command_get_handler(httpd_req_t *req)
     buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
         if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            ESP_LOGI(TAG, "查询参数: %s", buf);
+            // ESP_LOGI(TAG, "查询参数: %s", buf);
 
             char cmd[32];
             if (httpd_query_key_value(buf, "cmd", cmd, sizeof(cmd)) == ESP_OK) {
-                ESP_LOGI(TAG, "接收到命令: %s", cmd);
+                // ESP_LOGI(TAG, "接收到命令: %s", cmd);
 
                 /* 调用命令处理回调 */
                 if (g_command_handler != NULL) {
@@ -183,7 +190,7 @@ static esp_err_t params_get_handler(httpd_req_t *req)
             /* 处理threshold参数 */
             if (httpd_query_key_value(buf, "threshold", value_str, sizeof(value_str)) == ESP_OK) {
                 float threshold = atof(value_str);
-                ESP_LOGI(TAG, "设置阈值: %.2f", threshold);
+                // ESP_LOGI(TAG, "设置阈值: %.2f", threshold);
 
                 if (g_param_handler != NULL) {
                     esp_err_t ret = g_param_handler("threshold", threshold);
@@ -241,7 +248,7 @@ static esp_err_t motor_params_get_handler(httpd_req_t *req)
                 for (int i = 0; i < sizeof(params) / sizeof(params[0]); i++) {
                     if (httpd_query_key_value(buf, params[i], value_str, sizeof(value_str)) == ESP_OK) {
                         float value = atof(value_str);
-                        ESP_LOGI(TAG, "电机%d - %s: %.4f", motor, params[i], value);
+                        // ESP_LOGI(TAG, "电机%d - %s: %.4f", motor, params[i], value);
                         g_motor_param_handler(motor, params[i], value);
                     }
                 }

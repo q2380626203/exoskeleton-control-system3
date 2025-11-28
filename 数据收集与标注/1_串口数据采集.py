@@ -10,7 +10,8 @@
 4. 可视化实时曲线（可选）
 
 使用方法：
-python 1_串口数据采集.py --port COM3 --output 平地数据.csv --duration 300
+python 1_串口数据采集.py --port COM18 --output 平地数据.csv --duration 300
+python 1_串口数据采集.py --port COM18 --output 平地数据_已推理.csv --duration 300
 """
 
 import serial
@@ -52,8 +53,8 @@ class 串口数据采集器:
             'm2_torque',      # 电机2力矩 (N·m)
             'ch6_max',        # ch6最大差值
             'ch7_max',        # ch7最大差值
-            'ch6_new',        # ch6新值
-            'ch7_new'         # ch7新值
+            'm1_ai_label',    # m1 AI预测标签 (0:静止, 1:抬腿, 2:压腿)
+            'm2_ai_label'     # m2 AI预测标签 (0:静止, 1:抬腿, 2:压腿)
         ]
 
     def 连接串口(self):
@@ -89,10 +90,12 @@ class 串口数据采集器:
         if abs(data['m1_torque']) > 10 or abs(data['m2_torque']) > 10:
             return False
 
-        # ch6/ch7范围: 0 到 10 (遥控器通道值)
+        # ch6/ch7范围: 0 到 10 (最大差值)
         if not (0 <= data['ch6_max'] <= 10 and 0 <= data['ch7_max'] <= 10):
             return False
-        if not (0 <= data['ch6_new'] <= 10 and 0 <= data['ch7_new'] <= 10):
+
+        # AI标签范围: 0 到 2 (0:静止, 1:抬腿, 2:压腿)
+        if not (0 <= data['m1_ai_label'] <= 2 and 0 <= data['m2_ai_label'] <= 2):
             return False
 
         return True
@@ -128,8 +131,8 @@ class 串口数据采集器:
                 'm2_torque': values[5],
                 'ch6_max': values[6],
                 'ch7_max': values[7],
-                'ch6_new': values[8],
-                'ch7_new': values[9]
+                'm1_ai_label': values[8],  # AI预测的m1阶段标签
+                'm2_ai_label': values[9]   # AI预测的m2阶段标签
             }
 
             # 验证数据合理性

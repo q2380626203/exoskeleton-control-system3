@@ -15,6 +15,7 @@
 #include "wifi_webserver.h"
 #include "voice_module.h"
 #include "button_detector.h"
+#include "ai_inference.h" // AI推理模块
 
 static const char *TAG = "MAIN";
 
@@ -36,6 +37,19 @@ static httpd_handle_t web_server = NULL;
 UnitreeMotorDriver motor_driver;
 SpeedFollowMode speed_follow; // 速度跟随模式实例
 motor_position_buffers_t position_buffers; // 位置缓存区
+
+// ==================== AI推理相关 ====================
+// 速度窗口缓冲区 (m1和m2各50个速度采样点)
+#define AI_WINDOW_SIZE 50
+static float m1_velocity_window[AI_WINDOW_SIZE] = {0};
+static float m2_velocity_window[AI_WINDOW_SIZE] = {0};
+static int ai_window_index = 0;  // 窗口索引
+static bool ai_model_ready = false;  // AI模型是否已初始化
+
+// AI推理结果
+static int m1_predicted_phase = 0;  // m1预测的阶段 (0:静止, 1:抬腿, 2:压腿)
+static int m2_predicted_phase = 0;  // m2预测的阶段
+// ==================== AI推理相关结束 ====================
 
 
 // Motor command parameters for both motors, protected by a mutex
@@ -441,9 +455,40 @@ void motor_control_task(void *pvParameters) {
             // 更新速度跟随模式的周期高频RMS计算
             //speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
 
-            // 获取周期高频RMS值作为输出
-            float ch6_new = 1.0;
-            float ch7_new = 1.0;
+            // ==================== AI推理部分 ====================
+            // 使用滑动窗口：将所有数据向前移动一位，保持时间顺序
+            for (int i = 0; i < AI_WINDOW_SIZE - 1; i++) {
+                m1_velocity_window[i] = m1_velocity_window[i + 1];
+                m2_velocity_window[i] = m2_velocity_window[i + 1];
+            }
+            // 最新数据放在窗口末尾
+            m1_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_1.vel;
+            m2_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_2.vel;
+
+            ai_window_index++;
+
+            // 当窗口填满50个点后，每次都运行AI推理
+            if (ai_window_index >= AI_WINDOW_SIZE) {
+                // 只有在AI模型就绪时才推理
+                if (ai_model_ready) {
+                    // m1推理
+                    ai_inference_result_t m1_result;
+                    if (ai_run_inference(m1_velocity_window, &m1_result)) {
+                        m1_predicted_phase = m1_result.phase;
+                    }
+
+                    // m2推理
+                    ai_inference_result_t m2_result;
+                    if (ai_run_inference(m2_velocity_window, &m2_result)) {
+                        m2_predicted_phase = m2_result.phase;
+                    }
+                }
+            }
+
+            // 使用AI推理结果作为标签输出
+            float m1_ai_label = (float)m1_predicted_phase;  // m1的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
+            float m2_ai_label = (float)m2_predicted_phase;  // m2的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
+            // ==================== AI推理部分结束 ====================
 
             // 检查阈值并可能激活速度跟随模式
             speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
@@ -452,12 +497,12 @@ void motor_control_task(void *pvParameters) {
             speed_follow.update(motor_data_1, ch6_max, ch7_max);
             speed_follow.update(motor_data_2, ch6_max, ch7_max);
 
-            
+
 
             printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                    motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
                    motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
-                   ch6_max, ch7_max, ch6_new, ch7_new);
+                   ch6_max, ch7_max, m1_ai_label, m2_ai_label);
         }
 
         loop_count++;
@@ -489,6 +534,26 @@ extern "C" void app_main() {
     // 初始化语音模块
     voice_module_init(&voice_module);
     voice_speak(&voice_module, "系统启动成功");
+
+    // ==================== 初始化AI模型 ====================
+    ESP_LOGI(TAG, "正在初始化AI推理模型...");
+    if (ai_model_init()) {
+        ai_model_ready = true;
+        ESP_LOGI(TAG, "✓ AI模型初始化成功");
+
+        // 获取并打印模型信息
+        uint32_t model_size, arena_used;
+        ai_get_model_info(&model_size, &arena_used);
+        ESP_LOGI(TAG, "  模型大小: %lu bytes", model_size);
+        ESP_LOGI(TAG, "  内存使用: %lu bytes", arena_used);
+
+        voice_speak(&voice_module, "AI模型已就绪");
+    } else {
+        ai_model_ready = false;
+        ESP_LOGW(TAG, "⚠ AI模型初始化失败，将使用默认标签");
+        voice_speak(&voice_module, "AI模型加载失败");
+    }
+    // ==================== AI模型初始化结束 ====================
 
     // 为电机参数创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();

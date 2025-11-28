@@ -289,14 +289,14 @@ void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
             if (ch6_triggered && ch7_triggered) {
                 // 两者都触发，选择数值更大的一方
                 _triggered_channel = (ch6_max > ch7_max) ? 6 : 7;
-                ESP_LOGI(TAG, "🚀 双通道触发！选择ch%d (ch6=%.1f, ch7=%.1f)，等待300ms检测对应电机",
-                         _triggered_channel, ch6_max, ch7_max);
+                // ESP_LOGI(TAG, "🚀 双通道触发！选择ch%d (ch6=%.1f, ch7=%.1f)，等待300ms检测对应电机",
+                //          _triggered_channel, ch6_max, ch7_max);
             } else if (ch6_triggered) {
                 _triggered_channel = 6;
-                ESP_LOGI(TAG, "🚀 ch6触发(%.1f)！等待300ms检测2号电机-v", ch6_max);
+                // ESP_LOGI(TAG, "🚀 ch6触发(%.1f)！等待300ms检测2号电机-v", ch6_max);
             } else {
                 _triggered_channel = 7;
-                ESP_LOGI(TAG, "🚀 ch7触发(%.1f)！等待300ms检测1号电机+v", ch7_max);
+                // ESP_LOGI(TAG, "🚀 ch7触发(%.1f)！等待300ms检测1号电机+v", ch7_max);
             }
 
             _first_trigger_detected = true;
@@ -308,8 +308,8 @@ void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
         _state = SPEED_FOLLOW_WAITING;
         _waiting_start_time = esp_timer_get_time() / 1000;
 
-        ESP_LOGI(TAG, "✅ 进入等待状态，300ms后检测%s电机速度",
-                 _triggered_channel == 6 ? "2号" : "1号");
+        // ESP_LOGI(TAG, "✅ 进入等待状态，300ms后检测%s电机速度",
+        //          _triggered_channel == 6 ? "2号" : "1号");
     }
 }
 
@@ -354,7 +354,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 _lifting_motor = 1;
                 _active_motor = 2; // 下个周期2号工作
                 _phase_start_time = current_time;
-                ESP_LOGI(TAG, "🎯 按键模式：1号电机速度触发(+v=%.3f)，开始抬腿", motor_data.vel);
+                // ESP_LOGI(TAG, "🎯 按键模式：1号电机速度触发(+v=%.3f)，开始抬腿", motor_data.vel);
 
                 float scaled_vel = _captured_velocity * _velocity_scale;
                 setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
@@ -367,7 +367,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 _lifting_motor = 2;
                 _active_motor = 1; // 下个周期1号工作
                 _phase_start_time = current_time;
-                ESP_LOGI(TAG, "🎯 按键模式：2号电机速度触发(-v=%.3f)，开始抬腿", motor_data.vel);
+                // ESP_LOGI(TAG, "🎯 按键模式：2号电机速度触发(-v=%.3f)，开始抬腿", motor_data.vel);
 
                 float scaled_vel = _captured_velocity * _velocity_scale;
                 setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
@@ -397,8 +397,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         _lifting_motor = 2;
                         _active_motor = 1; // 下个周期1号工作
                         _phase_start_time = current_time;
-                        ESP_LOGI(TAG, "🚀 ch6触发后检测到2号-v=%.3f，捕获速度，2号开始抬腿(超时%dms)",
-                                 motor_data.vel, _phase1_timeout_ms);
+                        // ESP_LOGI(TAG, "🚀 ch6触发后检测到2号-v=%.3f，捕获速度，2号开始抬腿(超时%dms)",
+                        //          motor_data.vel, _phase1_timeout_ms);
 
                         // 使用捕获速度的0.8倍设置电机参数
                         float scaled_vel = _captured_velocity * _velocity_scale;
@@ -415,8 +415,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         _lifting_motor = 1;
                         _active_motor = 2; // 下个周期2号工作
                         _phase_start_time = current_time;
-                        ESP_LOGI(TAG, "🚀 ch7触发后检测到1号+v=%.3f，捕获速度，1号开始抬腿(超时%dms)",
-                                 motor_data.vel, _phase1_timeout_ms);
+                        // ESP_LOGI(TAG, "🚀 ch7触发后检测到1号+v=%.3f，捕获速度，1号开始抬腿(超时%dms)",
+                        //          motor_data.vel, _phase1_timeout_ms);
 
                         // 使用捕获速度的0.8倍设置电机参数
                         float scaled_vel = _captured_velocity * _velocity_scale;
@@ -442,10 +442,10 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 // 检测超时
                 if (current_time - _working_start_time >= timeout_ms) {
                     if (_is_button_triggered) {
-                        ESP_LOGW(TAG, "⏱️ 1号电机工作超时4s未检测到速度触发，进入静止状态");
+                        // ESP_LOGW(TAG, "⏱️ 1号电机工作超时4s未检测到速度触发，进入静止状态");
                         _is_button_triggered = false; // 清除按键触发标志
                     } else {
-                        ESP_LOGW(TAG, "⏱️ 1号电机工作超时1.2s未检测到速度触发，进入静止状态");
+                        // ESP_LOGW(TAG, "⏱️ 1号电机工作超时1.2s未检测到速度触发，进入静止状态");
                     }
                     _is_stationary = true; // 设置静止标志（按键和缓存区触发都会触发语音）
                     _is_active = false;
@@ -458,7 +458,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         diff_buffer_clear_all(_diff_buffers);
                         position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
                         position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
-                        ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                        // ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
                     }
                     break;
                 }
@@ -472,8 +472,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 _state = SPEED_FOLLOW_PHASE1;
                 _lifting_motor = 1; // 1号电机抬腿
                 _phase_start_time = current_time;
-                ESP_LOGI(TAG, "🚀 1号电机检测到+v=%.3f，捕获速度，开始抬腿(超时%dms)",
-                         motor_data.vel, _phase1_timeout_ms);
+                // ESP_LOGI(TAG, "🚀 1号电机检测到+v=%.3f，捕获速度，开始抬腿(超时%dms)",
+                //          motor_data.vel, _phase1_timeout_ms);
 
                 // 1号电机开始抬腿动作，使用捕获速度的0.8倍
                 float scaled_vel = _captured_velocity * _velocity_scale;
@@ -512,7 +512,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         diff_buffer_clear_all(_diff_buffers);
                         position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
                         position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
-                        ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
+                        // ESP_LOGI(TAG, "🗑️ 已清空位置缓存区和ch6/ch7差值缓存区，等待新的阈值触发");
                     }
                     break;
                 }
