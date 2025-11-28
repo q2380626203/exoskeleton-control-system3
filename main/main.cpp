@@ -146,6 +146,16 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
         voice_speak(&voice_module, torque_text);
         return ESP_OK;
     }
+    else if (strcmp(cmd, "mode_ai") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到切换到AI模式命令");
+        speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
+        return ESP_OK;
+    }
+    else if (strcmp(cmd, "mode_program") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到切换到程序模式命令");
+        speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
+        return ESP_OK;
+    }
 
     ESP_LOGW(TAG, "[WEB] 未知命令: %s", cmd);
     return ESP_FAIL;
@@ -308,6 +318,13 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
         "压腿阶段"         // SPEED_FOLLOW_PHASE2
     };
 
+    // 阶段中文映射
+    const char* phase_names[] = {
+        "静止",    // 0
+        "抬腿",    // 1
+        "压腿"     // 2
+    };
+
     speed_follow_state_t current_state = speed_follow.getState();
     uint8_t active_motor = speed_follow.getActiveMotor();
     uint8_t lifting_motor = speed_follow.getLiftingMotor();
@@ -316,9 +333,21 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     float torque_value = motor1_config->phase1.torque;
 
+    // 获取当前模式和阶段
+    speed_follow_mode_type_t mode_type = speed_follow.getModeType();
+    const char* mode_name = (mode_type == SPEED_FOLLOW_MODE_AI) ? "AI模式" : "程序模式";
+
+    int m1_phase = speed_follow.getCurrentM1Phase();
+    int m2_phase = speed_follow.getCurrentM2Phase();
+
+    // 确保阶段值在合法范围内
+    if (m1_phase < 0 || m1_phase > 2) m1_phase = 0;
+    if (m2_phase < 0 || m2_phase > 2) m2_phase = 0;
+
     int written = snprintf(state_json, max_len,
-        "{\"state\":\"%s\",\"state_id\":%d,\"active_motor\":%d,\"lifting_motor\":%d,\"torque\":%.2f}",
-        state_names[current_state], current_state, active_motor, lifting_motor, torque_value);
+        "{\"state\":\"%s\",\"state_id\":%d,\"active_motor\":%d,\"lifting_motor\":%d,\"torque\":%.2f,\"mode\":\"%s\",\"m1_phase\":\"%s\",\"m2_phase\":\"%s\"}",
+        state_names[current_state], current_state, active_motor, lifting_motor, torque_value,
+        mode_name, phase_names[m1_phase], phase_names[m2_phase]);
 
     if (written < 0 || written >= (int)max_len) {
         ESP_LOGW(TAG, "[WEB] 状态JSON生成失败或截断");
@@ -477,6 +506,9 @@ void motor_control_task(void *pvParameters) {
                         // 从单次推理结果中获取两腿的阶段预测
                         m1_predicted_phase = result.m1_phase;
                         m2_predicted_phase = result.m2_phase;
+
+                        // 注入AI推理结果到速度跟随模块（用于AI模式判断）
+                        speed_follow.updateAIPhase(result.m1_phase, result.m2_phase);
                     }
                 }
             }

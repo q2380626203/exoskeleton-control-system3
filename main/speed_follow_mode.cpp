@@ -27,7 +27,9 @@ SpeedFollowMode::SpeedFollowMode()
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
-      _global_mutex(nullptr), _diff_buffers(nullptr) {
+      _global_mutex(nullptr), _diff_buffers(nullptr),
+      _mode_type(SPEED_FOLLOW_MODE_AI), _ai_m1_phase(0), _ai_m2_phase(0),
+      _current_m1_phase(0), _current_m2_phase(0), _both_static_start_time(0) {
 }
 
 // ============================================================================
@@ -347,31 +349,69 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-            // 检测电机1速度触发
-            if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
-                _captured_velocity = motor_data.vel;
-                _state = SPEED_FOLLOW_PHASE1;
-                _lifting_motor = 1;
-                _active_motor = 2; // 下个周期2号工作
-                _phase_start_time = current_time;
-                // ESP_LOGI(TAG, "🎯 按键模式：1号电机速度触发(+v=%.3f)，开始抬腿", motor_data.vel);
+            {
+                bool motor1_triggered = false;
+                bool motor2_triggered = false;
 
-                float scaled_vel = _captured_velocity * _velocity_scale;
-                setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
-                              _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
-            }
-            // 检测电机2速度触发
-            else if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
-                _captured_velocity = motor_data.vel;
-                _state = SPEED_FOLLOW_PHASE1;
-                _lifting_motor = 2;
-                _active_motor = 1; // 下个周期1号工作
-                _phase_start_time = current_time;
-                // ESP_LOGI(TAG, "🎯 按键模式：2号电机速度触发(-v=%.3f)，开始抬腿", motor_data.vel);
+                if (_mode_type == SPEED_FOLLOW_MODE_AI) {
+                    // AI模式：使用AI推理结果判断抬腿触发
+                    if (motor_data.id == 1) {
+                        motor1_triggered = (_ai_m1_phase == 1);  // 1 = 抬腿
+                        _current_m1_phase = _ai_m1_phase;  // 更新当前阶段（包括静止0、抬腿1、压腿2）
+                    } else if (motor_data.id == 2) {
+                        motor2_triggered = (_ai_m2_phase == 1);  // 1 = 抬腿
+                        _current_m2_phase = _ai_m2_phase;  // 更新当前阶段（包括静止0、抬腿1、压腿2）
+                    }
+                } else {
+                    // 程序模式：使用速度阈值判断
+                    if (motor_data.id == 1) {
+                        motor1_triggered = (motor_data.vel > _config_motor1.trigger_speed);
+                        _current_m1_phase = motor1_triggered ? 1 : 0;  // 触发为1，否则为0
+                    } else if (motor_data.id == 2) {
+                        motor2_triggered = (motor_data.vel < _config_motor2.trigger_speed);
+                        _current_m2_phase = motor2_triggered ? 1 : 0;  // 触发为1，否则为0
+                    }
+                }
 
-                float scaled_vel = _captured_velocity * _velocity_scale;
-                setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
-                              _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                // 检测电机1触发
+                if (motor1_triggered) {
+                    _captured_velocity = motor_data.vel;  // 捕获速度
+                    _phase_start_time = current_time;
+
+                    if (_mode_type == SPEED_FOLLOW_MODE_AI) {
+                        // AI模式：直接进入AI_RUNNING状态，同时控制双腿
+                        _state = SPEED_FOLLOW_AI_RUNNING;
+                        _both_static_start_time = 0;  // 重置静止计时器
+                    } else {
+                        // 程序模式：进入PHASE1状态机
+                        _active_motor = 2; // 下个周期2号工作
+                        _lifting_motor = 1;
+                        _state = SPEED_FOLLOW_PHASE1;
+                        float scaled_vel = _captured_velocity * _velocity_scale;
+                        setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                                      _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                    }
+                }
+                // 检测电机2触发
+                else if (motor2_triggered) {
+                    _captured_velocity = motor_data.vel;  // 捕获速度
+                    _phase_start_time = current_time;
+
+                    if (_mode_type == SPEED_FOLLOW_MODE_AI) {
+                        // AI模式：直接进入AI_RUNNING状态，同时控制双腿
+                        _state = SPEED_FOLLOW_AI_RUNNING;
+                        _both_static_start_time = 0;  // 重置静止计时器
+                    } else {
+                        // 程序模式：进入PHASE1状态机
+                        _active_motor = 1; // 下个周期1号工作
+                        _lifting_motor = 2;
+                        _state = SPEED_FOLLOW_PHASE1;
+                        float scaled_vel = _captured_velocity * _velocity_scale;
+                        setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                                      _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                    }
+                }
+                // AI模式下，即使不触发也要更新阶段显示（静止状态已由开头的setMotorParams处理）
             }
             break;
 
@@ -392,36 +432,42 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
                         // 捕获速度值
                         _captured_velocity = motor_data.vel;
-
-                        _state = SPEED_FOLLOW_PHASE1;
-                        _lifting_motor = 2;
-                        _active_motor = 1; // 下个周期1号工作
                         _phase_start_time = current_time;
-                        // ESP_LOGI(TAG, "🚀 ch6触发后检测到2号-v=%.3f，捕获速度，2号开始抬腿(超时%dms)",
-                        //          motor_data.vel, _phase1_timeout_ms);
 
-                        // 使用捕获速度的0.8倍设置电机参数
-                        float scaled_vel = _captured_velocity * _velocity_scale;
-                        setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
-                                      _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                        if (_mode_type == SPEED_FOLLOW_MODE_AI) {
+                            // AI模式：直接进入AI_RUNNING状态
+                            _state = SPEED_FOLLOW_AI_RUNNING;
+                            _both_static_start_time = 0;  // 重置静止计时器
+                        } else {
+                            // 程序模式：进入PHASE1状态机
+                            _lifting_motor = 2;
+                            _active_motor = 1;
+                            _state = SPEED_FOLLOW_PHASE1;
+                            float scaled_vel = _captured_velocity * _velocity_scale;
+                            setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                                          _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                        }
                     }
                 } else if (_triggered_channel == 7) {
                     // ch7触发，检测1号电机+v
                     if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
                         // 捕获速度值
                         _captured_velocity = motor_data.vel;
-
-                        _state = SPEED_FOLLOW_PHASE1;
-                        _lifting_motor = 1;
-                        _active_motor = 2; // 下个周期2号工作
                         _phase_start_time = current_time;
-                        // ESP_LOGI(TAG, "🚀 ch7触发后检测到1号+v=%.3f，捕获速度，1号开始抬腿(超时%dms)",
-                        //          motor_data.vel, _phase1_timeout_ms);
 
-                        // 使用捕获速度的0.8倍设置电机参数
-                        float scaled_vel = _captured_velocity * _velocity_scale;
-                        setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
-                                      _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                        if (_mode_type == SPEED_FOLLOW_MODE_AI) {
+                            // AI模式：直接进入AI_RUNNING状态
+                            _state = SPEED_FOLLOW_AI_RUNNING;
+                            _both_static_start_time = 0;  // 重置静止计时器
+                        } else {
+                            // 程序模式：进入PHASE1状态机
+                            _lifting_motor = 1;
+                            _active_motor = 2;
+                            _state = SPEED_FOLLOW_PHASE1;
+                            float scaled_vel = _captured_velocity * _velocity_scale;
+                            setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                                          _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                        }
                     }
                 }
             }
@@ -429,9 +475,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             break;
 
         case SPEED_FOLLOW_MOTOR1_WORKING:
-            // 1号电机工作状态：立即检测+v触发抬腿
-            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
-                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+            // 1号电机工作状态：程序模式专用，检测速度触发
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
@@ -464,30 +508,32 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 }
             }
 
+            // 程序模式逻辑
+            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+
             // 立即检测速度触发条件
             if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
                 // 捕获速度值
                 _captured_velocity = motor_data.vel;
-
                 _state = SPEED_FOLLOW_PHASE1;
                 _lifting_motor = 1; // 1号电机抬腿
                 _phase_start_time = current_time;
-                // ESP_LOGI(TAG, "🚀 1号电机检测到+v=%.3f，捕获速度，开始抬腿(超时%dms)",
-                //          motor_data.vel, _phase1_timeout_ms);
+                _current_m1_phase = 1;
 
                 // 1号电机开始抬腿动作，使用捕获速度的0.8倍
                 float scaled_vel = _captured_velocity * _velocity_scale;
                 setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
                               _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+            } else {
+                _current_m1_phase = 0;
             }
             break;
 
         case SPEED_FOLLOW_MOTOR2_WORKING:
-            // 2号电机工作状态：立即检测-v触发抬腿
+            // 2号电机工作状态：程序模式专用，检测速度触发
             setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
                           _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
-            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
-                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
             // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
             {
@@ -518,26 +564,30 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 }
             }
 
+            // 程序模式逻辑
+            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+
             // 立即检测速度触发条件
             if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
                 // 捕获速度值
                 _captured_velocity = motor_data.vel;
-
                 _state = SPEED_FOLLOW_PHASE1;
                 _lifting_motor = 2; // 2号电机抬腿
                 _phase_start_time = current_time;
-                ESP_LOGI(TAG, "🚀 2号电机检测到-v=%.3f，捕获速度，开始抬腿(超时%dms)",
-                         motor_data.vel, _phase1_timeout_ms);
+                _current_m2_phase = 1;
 
                 // 2号电机开始抬腿动作，使用捕获速度的0.8倍
                 float scaled_vel = _captured_velocity * _velocity_scale;
                 setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
                               _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+            } else {
+                _current_m2_phase = 0;
             }
             break;
 
         case SPEED_FOLLOW_PHASE1:
-            // 抬腿阶段 - 使用超时机制 + 速度反转检测
+            // 抬腿阶段 - 程序模式专用：超时+速度反转检测
             {
                 bool should_transition = false;
 
@@ -553,12 +603,14 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         should_transition = true;
                         ESP_LOGI(TAG, "🔄 电机1速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
+                    _current_m1_phase = (motor_data.vel > _config_motor1.trigger_speed) ? 1 : 0;
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
                     // 电机2：从-v变为+v
                     if (_captured_velocity < 0 && motor_data.vel > 0) {
                         should_transition = true;
                         ESP_LOGI(TAG, "🔄 电机2速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
+                    _current_m2_phase = (motor_data.vel < _config_motor2.trigger_speed) ? 1 : 0;
                 }
 
                 if (should_transition) {
@@ -566,9 +618,6 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _active_motor = (_lifting_motor == 1) ? 2 : 1; // 切换工作电机
                     _state = SPEED_FOLLOW_PHASE2;
                     _phase_start_time = current_time;
-
-                    ESP_LOGI(TAG, "🔄 抬腿完成，切换到%d号工作，%d号开始压腿(超时%dms)",
-                             _active_motor, _lifting_motor, _phase2_timeout_ms);
 
                     // 如果当前接收的就是抬腿电机的数据，立即设置PHASE2参数
                     if ((_lifting_motor == 1 && motor_data.id == 1) ||
@@ -582,26 +631,26 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                                           _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
                         }
                     }
-            } else {
-                // 继续抬腿动作 - 持续根据当前电机的实时速度*0.8更新参数
-                if (_lifting_motor == 1 && motor_data.id == 1) {
-                    // 电机1抬腿，使用电机1的实时速度*0.8
-                    float scaled_vel = motor_data.vel * _velocity_scale;
-                    setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
-                                  _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
-                } else if (_lifting_motor == 2 && motor_data.id == 2) {
-                    // 电机2抬腿，使用电机2的实时速度*0.8
-                    float scaled_vel = motor_data.vel * _velocity_scale;
-                    setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
-                                  _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                } else {
+                    // 继续抬腿动作 - 持续根据当前电机的实时速度*0.8更新参数
+                    if (_lifting_motor == 1 && motor_data.id == 1) {
+                        // 电机1抬腿，使用电机1的实时速度*0.8
+                        float scaled_vel = motor_data.vel * _velocity_scale;
+                        setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                                      _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                    } else if (_lifting_motor == 2 && motor_data.id == 2) {
+                        // 电机2抬腿，使用电机2的实时速度*0.8
+                        float scaled_vel = motor_data.vel * _velocity_scale;
+                        setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                                      _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                    }
+                    // 注意：如果收到的是另一个电机的数据，保持上一次设置的参数不变
                 }
-                // 注意：如果收到的是另一个电机的数据，保持上一次设置的参数不变
-            }
             }
             break;
 
         case SPEED_FOLLOW_PHASE2:
-            // 压腿阶段 - 使用超时机制 + 速度反转检测 + 持续更新速度参数
+            // 压腿阶段 - 程序模式专用：超时+速度近零检测
             {
                 bool should_transition = false;
 
@@ -617,12 +666,14 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         should_transition = true;
                         ESP_LOGI(TAG, "🔄 电机1速度降低到阈值内(%.3f)，完成压腿", motor_data.vel);
                     }
+                    _current_m1_phase = 2;  // 压腿中
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
                     // 电机2：速度降低到阈值范围内（-v到+v之间，接近零速）
                     if (motor_data.vel > -_phase2_vel_threshold && motor_data.vel < _phase2_vel_threshold) {
                         should_transition = true;
                         ESP_LOGI(TAG, "🔄 电机2速度降低到阈值内(%.3f)，完成压腿", motor_data.vel);
                     }
+                    _current_m2_phase = 2;  // 压腿中
                 }
 
                 if (should_transition) {
@@ -630,8 +681,6 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_IDLE;
                     _lifting_motor = 0;
                     _phase_start_time = current_time;
-                    ESP_LOGI(TAG, "✅ 压腿完成，进入空闲周期%dms",
-                             (_active_motor == 1) ? _config_motor1.idle_duration_ms : _config_motor2.idle_duration_ms);
 
                     // 设置空闲状态
                     setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
@@ -652,6 +701,77 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                                       _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
                     }
                     // 注意：如果收到的是另一个电机的数据，保持上一次设置的参数不变
+                }
+            }
+            break;
+
+        case SPEED_FOLLOW_AI_RUNNING:
+            // AI模式运行状态：同时控制双腿，双腿都静止4秒后退出
+            {
+                // 更新m1阶段并设置参数
+                if (motor_data.id == 1) {
+                    _current_m1_phase = _ai_m1_phase;
+                    float scaled_vel = motor_data.vel * _velocity_scale;
+
+                    if (_ai_m1_phase == 1) {
+                        // AI判断：抬腿阶段
+                        setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                                      _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                    } else if (_ai_m1_phase == 2) {
+                        // AI判断：压腿阶段
+                        setMotorParams(1, _config_motor1.phase2.mode, _config_motor1.phase2.pos, scaled_vel,
+                                      _config_motor1.phase2.torque, _config_motor1.phase2.kp, _config_motor1.phase2.kd);
+                    } else {
+                        // AI判断：静止阶段
+                        setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                                      _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+                    }
+                }
+                // 更新m2阶段并设置参数
+                else if (motor_data.id == 2) {
+                    _current_m2_phase = _ai_m2_phase;
+                    float scaled_vel = motor_data.vel * _velocity_scale;
+
+                    if (_ai_m2_phase == 1) {
+                        // AI判断：抬腿阶段
+                        setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                                      _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                    } else if (_ai_m2_phase == 2) {
+                        // AI判断：压腿阶段
+                        setMotorParams(2, _config_motor2.phase2.mode, _config_motor2.phase2.pos, scaled_vel,
+                                      _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
+                    } else {
+                        // AI判断：静止阶段
+                        setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                                      _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+                    }
+                }
+
+                // 检测双腿都静止的情况
+                if (_ai_m1_phase == 0 && _ai_m2_phase == 0) {
+                    // 双腿都静止
+                    if (_both_static_start_time == 0) {
+                        // 首次检测到双腿静止，开始计时
+                        _both_static_start_time = current_time;
+                    } else if (current_time - _both_static_start_time >= 4000) {
+                        // 双腿都静止超过4秒，退出助力
+                        ESP_LOGI(TAG, "✅ AI模式：双腿都静止超过4秒，退出助力");
+                        _is_stationary = true;
+                        _is_active = false;
+                        _state = SPEED_FOLLOW_IDLE;
+                        _first_trigger_detected = false;
+                        _triggered_channel = 0;
+                        _both_static_start_time = 0;
+                        // 清空所有缓存区
+                        if (_diff_buffers) {
+                            diff_buffer_clear_all(_diff_buffers);
+                            position_buffer_clear(position_buffer_get_motor1(_diff_buffers));
+                            position_buffer_clear(position_buffer_get_motor2(_diff_buffers));
+                        }
+                    }
+                } else {
+                    // 任意一条腿不静止，重置计时器
+                    _both_static_start_time = 0;
                 }
             }
             break;
@@ -753,4 +873,50 @@ float SpeedFollowMode::adjustTorque(bool increase) {
         ESP_LOGI(TAG, "[WEB] 助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
         return new_torque1;
     }
+}
+
+// ============================================================================
+// 双模式切换相关接口实现
+// ============================================================================
+
+/**
+ * @brief 设置模式类型（AI模式或程序模式）
+ * @param mode 模式类型
+ * @note 仅在IDLE状态允许切换模式，避免运动中切换导致的不连贯
+ */
+void SpeedFollowMode::setModeType(speed_follow_mode_type_t mode) {
+    // 仅在IDLE状态允许切换
+    if (_state == SPEED_FOLLOW_IDLE) {
+        _mode_type = mode;
+        const char* mode_name = (mode == SPEED_FOLLOW_MODE_AI) ? "AI模式" : "程序模式";
+        ESP_LOGI(TAG, "[模式切换] 切换到%s", mode_name);
+    } else {
+        ESP_LOGW(TAG, "[模式切换] 当前状态非IDLE，无法切换模式");
+    }
+}
+
+/**
+ * @brief 更新AI推理结果
+ * @param m1_phase m1阶段（0:静止, 1:抬腿, 2:压腿）
+ * @param m2_phase m2阶段（0:静止, 1:抬腿, 2:压腿）
+ */
+void SpeedFollowMode::updateAIPhase(int m1_phase, int m2_phase) {
+    _ai_m1_phase = m1_phase;
+    _ai_m2_phase = m2_phase;
+}
+
+/**
+ * @brief 获取当前m1阶段（用于网页显示）
+ * @return 阶段值（0:静止, 1:抬腿, 2:压腿）
+ */
+int SpeedFollowMode::getCurrentM1Phase() const {
+    return _current_m1_phase;
+}
+
+/**
+ * @brief 获取当前m2阶段（用于网页显示）
+ * @return 阶段值（0:静止, 1:抬腿, 2:压腿）
+ */
+int SpeedFollowMode::getCurrentM2Phase() const {
+    return _current_m2_phase;
 }

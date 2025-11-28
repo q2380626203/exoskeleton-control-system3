@@ -116,6 +116,28 @@ const char webpage_html[] = R"rawliteral(
             color: #333;
         }
 
+        .btn-secondary {
+            background: linear-gradient(135deg, #a8c0ff 0%, #c9d6ff 100%);
+            color: #333;
+        }
+
+        /* 模式按钮激活状态 */
+        .btn.active {
+            box-shadow: 0 0 10px rgba(0, 123, 255, 0.5);
+            border: 2px solid #007bff;
+            font-weight: bold;
+        }
+
+        /* 阶段显示样式 */
+        .phase-badge {
+            padding: 6px 14px;
+            border-radius: 12px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 13px;
+        }
+
         /* 状态显示区 */
         .status-card {
             background: linear-gradient(135deg, #e0e7ff 0%, #f3e7ff 100%);
@@ -252,9 +274,15 @@ const char webpage_html[] = R"rawliteral(
 
         <!-- 控制按钮区 -->
         <div class="control-section">
+            <h3 style="margin-bottom: 15px; color: #333;">模式控制</h3>
+            <div class="button-group">
+                <button class="btn btn-primary" id="btn-ai-mode" onclick="sendCommand('mode_ai')">🤖 AI模式</button>
+                <button class="btn btn-secondary" id="btn-program-mode" onclick="sendCommand('mode_program')">⚙️ 程序模式</button>
+            </div>
+
             <h3 style="margin-bottom: 15px; color: #333;">基本控制</h3>
             <div class="button-group">
-                <button class="btn btn-success" onclick="sendCommand('start')">▶ 启动</button>
+                <button class="btn btn-success" onclick="sendCommand('start')">▶ 开启</button>
                 <button class="btn btn-danger" onclick="sendCommand('stop')">⏸ 关闭</button>
             </div>
 
@@ -275,8 +303,20 @@ const char webpage_html[] = R"rawliteral(
         <div class="status-card">
             <h3 style="margin-bottom: 15px; color: #333;">📊 状态机信息</h3>
             <div class="status-row">
+                <span class="status-label">当前模式:</span>
+                <span class="status-badge" id="mode-text">AI模式</span>
+            </div>
+            <div class="status-row">
                 <span class="status-label">当前状态:</span>
                 <span class="status-badge badge-idle" id="state-text">空闲</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">m1阶段:</span>
+                <span class="phase-badge" id="m1-phase">静止</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">m2阶段:</span>
+                <span class="phase-badge" id="m2-phase">静止</span>
             </div>
             <div class="status-row">
                 <span class="status-label">活动电机:</span>
@@ -474,6 +514,26 @@ const char webpage_html[] = R"rawliteral(
             fetch('/api/state')
                 .then(response => response.json())
                 .then(data => {
+                    // 更新模式显示
+                    document.getElementById('mode-text').textContent = data.mode;
+
+                    // 更新阶段显示
+                    document.getElementById('m1-phase').textContent = data.m1_phase;
+                    document.getElementById('m2-phase').textContent = data.m2_phase;
+
+                    // 更新模式按钮激活状态
+                    const isAIMode = (data.mode === "AI模式");
+                    const btnAI = document.getElementById('btn-ai-mode');
+                    const btnProgram = document.getElementById('btn-program-mode');
+
+                    if (isAIMode) {
+                        btnAI.classList.add('active');
+                        btnProgram.classList.remove('active');
+                    } else {
+                        btnAI.classList.remove('active');
+                        btnProgram.classList.add('active');
+                    }
+
                     // 更新状态文本和样式
                     const stateText = document.getElementById('state-text');
                     stateText.textContent = data.state;

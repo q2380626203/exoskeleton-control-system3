@@ -7,11 +7,18 @@
 #include "freertos/semphr.h"
 #include "position_buffer.h"
 
+// 阶段判断模式
+typedef enum {
+    SPEED_FOLLOW_MODE_AI,        // AI模式（默认）
+    SPEED_FOLLOW_MODE_PROGRAM    // 程序硬编模式
+} speed_follow_mode_type_t;
+
 // 速度跟随模式状态
 typedef enum {
     SPEED_FOLLOW_IDLE,              // 空闲周期（300ms）
     SPEED_FOLLOW_WAITING,           // 等待状态：阈值触发后等待300ms检测另一电机速度
     SPEED_FOLLOW_BUTTON_WAITING,    // 按键触发等待状态：同时检测两个电机速度，谁先触发就进入谁的工作状态
+    SPEED_FOLLOW_AI_RUNNING,        // AI模式运行状态：同时控制双腿，双腿都静止4s后退出
     SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
     SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
     SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
@@ -135,6 +142,18 @@ public:
     // 清除缓存区触发标志（按键检测任务调用）
     void clearBufferTriggeredFlag() { _is_buffer_triggered = false; }
 
+    // ===== 双模式切换接口 =====
+    // 模式切换（仅在IDLE状态允许）
+    void setModeType(speed_follow_mode_type_t mode);
+    speed_follow_mode_type_t getModeType() const { return _mode_type; }
+
+    // AI推理结果注入（从main.cpp调用）
+    void updateAIPhase(int m1_phase, int m2_phase);
+
+    // 获取当前判断的阶段（用于网页显示）
+    int getCurrentM1Phase() const;
+    int getCurrentM2Phase() const;
+
 private:
     speed_follow_state_t _state;
     speed_follow_config_t _config_motor1;  // 电机1配置
@@ -187,6 +206,16 @@ private:
 
     // 差值缓存区指针（用于超时清空）
     motor_position_buffers_t* _diff_buffers;
+
+    // ===== 双模式切换相关 =====
+    speed_follow_mode_type_t _mode_type;  // 当前模式类型（AI/程序）
+    int _ai_m1_phase;                     // AI预测的m1阶段（0:静止, 1:抬腿, 2:压腿）
+    int _ai_m2_phase;                     // AI预测的m2阶段（0:静止, 1:抬腿, 2:压腿）
+    int _current_m1_phase;                // 当前m1阶段（用于网页显示）
+    int _current_m2_phase;                // 当前m2阶段（用于网页显示）
+
+    // AI模式静止检测
+    uint32_t _both_static_start_time;     // 双腿都静止的开始时间（用于4秒超时检测）
 };
 
 #endif // SPEED_FOLLOW_MODE_H
