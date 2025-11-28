@@ -16,7 +16,7 @@ TFLite优势：
 - 适合嵌入式设备（ESP32等）
 
 使用方法：
-python 2_模型转换.py --input motion_ai_model.h5 --data 训练数据_平地_m1.npz --quant int8
+python 2_模型转换.py --input motion_ai_model.h5 --data 训练数据_平地_双腿.npz --quant int8
 
 输出：
 - motion_ai_model.tflite (浮点TFLite模型)
@@ -231,9 +231,14 @@ class TFLite转换器:
 
         # 准备测试数据
         if len(测试数据) > 0:
-            sample = 测试数据[0:1]  # 取第一个样本: (1, 50)
-            # 添加通道维度以匹配Conv1D输入: (1, 50) -> (1, 50, 1)
-            sample = sample.reshape(1, 50, 1).astype(np.float32)
+            sample = 测试数据[0:1]  # 取第一个样本: (1, 50, 4)
+            # 确保数据形状为 (1, 50, 4) - 双腿联合输入
+            if len(sample.shape) == 3:
+                # 数据已经是 (1, 50, 4) 格式
+                sample = sample.astype(np.float32)
+            else:
+                # 数据是 (1, 200) 格式，需要reshape为 (1, 50, 4)
+                sample = sample.reshape(1, 50, 4).astype(np.float32)
         else:
             # 使用随机数据
             input_shape = input_details[0]['shape']
@@ -271,7 +276,7 @@ def 创建代表性数据集生成器(X_data, 样本数=100):
     创建代表性数据集生成器（用于量化）
 
     参数:
-        X_data: 输入数据 (形状: [N, 50, 1])
+        X_data: 输入数据 (形状: [N, 50, 4])
         样本数: 使用的样本数量
 
     返回:
@@ -281,12 +286,12 @@ def 创建代表性数据集生成器(X_data, 样本数=100):
         # 随机选择样本
         indices = np.random.choice(len(X_data), min(样本数, len(X_data)), replace=False)
         for i in indices:
-            # 确保数据形状为 [1, 50, 1]
+            # 确保数据形状为 [1, 50, 4]
             sample = X_data[i:i+1].astype(np.float32)
             # 验证形状
             if len(sample.shape) == 2:
-                # 如果是 [1, 50]，添加通道维度 -> [1, 50, 1]
-                sample = sample.reshape(1, 50, 1)
+                # 如果是 [1, 200]，reshape为 [1, 50, 4]
+                sample = sample.reshape(1, 50, 4)
             # TFLite期望输入是一个列表
             yield [sample]
 
@@ -396,10 +401,10 @@ def main():
         print(f"  - {c头文件} ({Path(c头文件).stat().st_size / 1024:.1f} KB)")
 
     print(f"\n下一步 - ESP32部署:")
-    print(f"  推荐方案: 使用ESP-IDF二进制嵌入（详见 ESP32部署说明.md）")
+    print(f"  推荐方案: 使用ESP-IDF二进制嵌入")
     print(f"  1. 将 {量化文件 if 量化文件 else 浮点文件} 复制到ESP32项目的 main/model/ 目录")
     print(f"  2. 在 main/CMakeLists.txt 中添加: EMBED_FILES \"model/{(量化文件 if 量化文件 else 浮点文件).name}\"")
-    print(f"  3. 参考 ESP32部署说明.md 实现推理代码")
+    print(f"  3. 在代码中使用 extern const uint8_t model_data[] 引用嵌入的模型数据")
     print(f"\n  优势: Flash占用仅 {Path(量化文件 if 量化文件 else 浮点文件).stat().st_size / 1024:.1f} KB（vs C头文件 ~920 KB）")
 
 

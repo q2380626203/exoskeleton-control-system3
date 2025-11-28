@@ -12,13 +12,13 @@ AI模型训练 - 第二周Day3-5
 3. 训练模型并保存
 4. 评估模型性能
 
-模型架构：
-- 输入：(batch, 50, 1) 速度窗口
+模型架构（方案A - 双腿联合模型）：
+- 输入：(batch, 50, 2) 双腿速度窗口 [m1_vel, m2_vel]
 - 共享特征提取：Conv1D + MaxPooling
-- 三个任务分支输出
+- 四个任务分支输出（场景、m1阶段、m2阶段、参数调整）
 
 使用方法：
-python 1_模型训练.py --input 训练数据_平地_m1.npz --epochs 50 --batch-size 32
+python 1_模型训练.py --input 训练数据_平地_双腿.npz --epochs 50 --batch-size 32
 
 输出：
 - motion_ai_model.h5 (完整模型)
@@ -65,19 +65,20 @@ class 运动AI模型:
 
     def 构建模型(self):
         """
-        构建多任务学习模型
+        构建多任务学习模型（双腿联合模型 - 方案A，仅速度）
 
         架构：
-        - 输入层：(窗口大小, 1)
+        - 输入层：(窗口大小, 2) - [m1速度, m2速度]
         - 共享特征提取：Conv1D + MaxPooling + Flatten + Dense
         - 场景分支：Dense -> Softmax (2类)
-        - 阶段分支：Dense -> Softmax (3类)
+        - m1阶段分支：Dense -> Softmax (3类)
+        - m2阶段分支：Dense -> Softmax (3类)
         - 参数分支：Dense -> Tanh (3个连续值)
         """
-        print("\n构建多任务学习模型...")
+        print("\n构建多任务学习模型（双腿联合 - 仅速度）...")
 
-        # 输入层
-        input_layer = layers.Input(shape=(self.窗口大小, 1), name='velocity_input')
+        # 输入层 - 2通道（m1速度+m2速度）
+        input_layer = layers.Input(shape=(self.窗口大小, 2), name='dual_leg_velocity_input')
 
         # 共享特征提取层
         x = layers.Conv1D(32, 5, activation='relu', padding='same', name='conv1')(input_layer)
@@ -96,11 +97,15 @@ class 运动AI模型:
         scene_branch = layers.Dense(64, activation='relu', name='scene_dense')(shared_features)
         scene_output = layers.Dense(self.场景数, activation='softmax', name='scene')(scene_branch)
 
-        # 任务2：阶段分类（静止/抬腿/压腿）
-        phase_branch = layers.Dense(64, activation='relu', name='phase_dense')(shared_features)
-        phase_output = layers.Dense(self.阶段数, activation='softmax', name='phase')(phase_branch)
+        # 任务2：m1阶段分类（静止/抬腿/压腿）
+        m1_phase_branch = layers.Dense(64, activation='relu', name='m1_phase_dense')(shared_features)
+        m1_phase_output = layers.Dense(self.阶段数, activation='softmax', name='m1_phase')(m1_phase_branch)
 
-        # 任务3：参数调整预测（delta_torque, delta_kd, delta_scale）
+        # 任务3：m2阶段分类（静止/抬腿/压腿）
+        m2_phase_branch = layers.Dense(64, activation='relu', name='m2_phase_dense')(shared_features)
+        m2_phase_output = layers.Dense(self.阶段数, activation='softmax', name='m2_phase')(m2_phase_branch)
+
+        # 任务4：参数调整预测（delta_torque, delta_kd, delta_scale）
         # 输出范围[-1, 1]，使用tanh激活
         param_branch = layers.Dense(64, activation='relu', name='param_dense')(shared_features)
         param_output = layers.Dense(3, activation='tanh', name='params')(param_branch)
@@ -108,8 +113,8 @@ class 运动AI模型:
         # 构建模型
         self.model = models.Model(
             inputs=input_layer,
-            outputs=[scene_output, phase_output, param_output],
-            name='motion_ai_model'
+            outputs=[scene_output, m1_phase_output, m2_phase_output, param_output],
+            name='dual_leg_ai_model'
         )
 
         # 编译模型
@@ -117,17 +122,20 @@ class 运动AI模型:
             optimizer=keras.optimizers.Adam(learning_rate=0.001),
             loss={
                 'scene': keras.losses.SparseCategoricalCrossentropy(),
-                'phase': keras.losses.SparseCategoricalCrossentropy(),
+                'm1_phase': keras.losses.SparseCategoricalCrossentropy(),
+                'm2_phase': keras.losses.SparseCategoricalCrossentropy(),
                 'params': keras.losses.MeanSquaredError()
             },
             loss_weights={
-                'scene': 1.0,   # 场景分类权重
-                'phase': 2.0,   # 阶段分类权重（更重要）
-                'params': 1.0   # 参数预测权重
+                'scene': 1.0,      # 场景分类权重
+                'm1_phase': 2.0,   # m1阶段分类权重（重要）
+                'm2_phase': 2.0,   # m2阶段分类权重（重要）
+                'params': 1.0      # 参数预测权重
             },
             metrics={
                 'scene': ['accuracy'],
-                'phase': ['accuracy'],
+                'm1_phase': ['accuracy'],
+                'm2_phase': ['accuracy'],
                 'params': [keras.metrics.MeanAbsoluteError()]
             }
         )
@@ -143,8 +151,8 @@ class 运动AI模型:
 
         return self.model
 
-    def 训练模型(self, X_train, y_scene_train, y_phase_train, y_params_train,
-                X_val, y_scene_val, y_phase_val, y_params_val,
+    def 训练模型(self, X_train, y_scene_train, y_m1_phase_train, y_m2_phase_train, y_params_train,
+                X_val, y_scene_val, y_m1_phase_val, y_m2_phase_val, y_params_val,
                 epochs=50, batch_size=32):
         """
         训练模型
@@ -176,13 +184,6 @@ class 运动AI模型:
                 patience=5,
                 min_lr=1e-6,
                 verbose=1
-            ),
-            # 模型检查点：保存最佳模型
-            callbacks.ModelCheckpoint(
-                'best_model_checkpoint.h5',
-                monitor='val_loss',
-                save_best_only=True,
-                verbose=1
             )
         ]
 
@@ -191,21 +192,23 @@ class 运动AI模型:
             X_train,
             {
                 'scene': y_scene_train,
-                'phase': y_phase_train,
+                'm1_phase': y_m1_phase_train,
+                'm2_phase': y_m2_phase_train,
                 'params': y_params_train
             },
             validation_data=(
                 X_val,
                 {
                     'scene': y_scene_val,
-                    'phase': y_phase_val,
+                    'm1_phase': y_m1_phase_val,
+                    'm2_phase': y_m2_phase_val,
                     'params': y_params_val
                 }
             ),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callback_list,
-            verbose=1
+            verbose=2  # 简化输出：每个epoch只显示一行
         )
 
         print("\n✓ 训练完成！")
@@ -241,8 +244,8 @@ class 运动AI模型:
 
         history = self.history.history
 
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-        fig.suptitle('模型训练历史', fontsize=16, fontweight='bold')
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+        fig.suptitle('双腿联合模型训练历史', fontsize=16, fontweight='bold')
 
         # 1. 总损失
         ax = axes[0, 0]
@@ -264,18 +267,28 @@ class 运动AI模型:
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 3. 阶段分类损失
+        # 3. m1阶段分类损失
         ax = axes[0, 2]
-        ax.plot(history['phase_loss'], label='训练损失', linewidth=2)
-        ax.plot(history['val_phase_loss'], label='验证损失', linewidth=2)
-        ax.set_title('阶段分类损失', fontsize=12, fontweight='bold')
+        ax.plot(history['m1_phase_loss'], label='训练损失', linewidth=2)
+        ax.plot(history['val_m1_phase_loss'], label='验证损失', linewidth=2)
+        ax.set_title('m1阶段分类损失', fontsize=12, fontweight='bold')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 4. 场景分类准确率
+        # 4. m2阶段分类损失
         ax = axes[1, 0]
+        ax.plot(history['m2_phase_loss'], label='训练损失', linewidth=2)
+        ax.plot(history['val_m2_phase_loss'], label='验证损失', linewidth=2)
+        ax.set_title('m2阶段分类损失', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 5. 场景分类准确率
+        ax = axes[1, 1]
         ax.plot(history['scene_accuracy'], label='训练准确率', linewidth=2)
         ax.plot(history['val_scene_accuracy'], label='验证准确率', linewidth=2)
         ax.set_title('场景分类准确率', fontsize=12, fontweight='bold')
@@ -284,20 +297,40 @@ class 运动AI模型:
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 5. 阶段分类准确率
-        ax = axes[1, 1]
-        ax.plot(history['phase_accuracy'], label='训练准确率', linewidth=2)
-        ax.plot(history['val_phase_accuracy'], label='验证准确率', linewidth=2)
-        ax.set_title('阶段分类准确率', fontsize=12, fontweight='bold')
+        # 6. m1阶段分类准确率
+        ax = axes[1, 2]
+        ax.plot(history['m1_phase_accuracy'], label='训练准确率', linewidth=2)
+        ax.plot(history['val_m1_phase_accuracy'], label='验证准确率', linewidth=2)
+        ax.set_title('m1阶段分类准确率', fontsize=12, fontweight='bold')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Accuracy')
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-        # 6. 参数预测MAE
-        ax = axes[1, 2]
-        ax.plot(history['params_mae'], label='训练MAE', linewidth=2)
-        ax.plot(history['val_params_mae'], label='验证MAE', linewidth=2)
+        # 7. m2阶段分类准确率
+        ax = axes[2, 0]
+        ax.plot(history['m2_phase_accuracy'], label='训练准确率', linewidth=2)
+        ax.plot(history['val_m2_phase_accuracy'], label='验证准确率', linewidth=2)
+        ax.set_title('m2阶段分类准确率', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Accuracy')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 8. 参数预测损失
+        ax = axes[2, 1]
+        ax.plot(history['params_loss'], label='训练损失', linewidth=2)
+        ax.plot(history['val_params_loss'], label='验证损失', linewidth=2)
+        ax.set_title('参数预测损失', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 9. 参数预测MAE
+        ax = axes[2, 2]
+        ax.plot(history['params_mean_absolute_error'], label='训练MAE', linewidth=2)
+        ax.plot(history['val_params_mean_absolute_error'], label='验证MAE', linewidth=2)
         ax.set_title('参数预测MAE', fontsize=12, fontweight='bold')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('MAE')
@@ -308,7 +341,7 @@ class 运动AI模型:
         plt.savefig(输出文件, dpi=150, bbox_inches='tight')
         print(f"\n✓ 训练历史可视化已保存: {输出文件}")
 
-    def 评估模型(self, X_test, y_scene_test, y_phase_test, y_params_test, 输出文件='model_evaluation.txt'):
+    def 评估模型(self, X_test, y_scene_test, y_m1_phase_test, y_m2_phase_test, y_params_test, 输出文件='model_evaluation.txt'):
         """
         评估模型性能
 
@@ -320,15 +353,19 @@ class 运动AI模型:
 
         # 预测
         predictions = self.model.predict(X_test, verbose=0)
-        pred_scene, pred_phase, pred_params = predictions
+        pred_scene, pred_m1_phase, pred_m2_phase, pred_params = predictions
 
         # 场景分类准确率
         scene_pred_labels = np.argmax(pred_scene, axis=1)
         scene_accuracy = np.mean(scene_pred_labels == y_scene_test)
 
-        # 阶段分类准确率
-        phase_pred_labels = np.argmax(pred_phase, axis=1)
-        phase_accuracy = np.mean(phase_pred_labels == y_phase_test)
+        # m1阶段分类准确率
+        m1_phase_pred_labels = np.argmax(pred_m1_phase, axis=1)
+        m1_phase_accuracy = np.mean(m1_phase_pred_labels == y_m1_phase_test)
+
+        # m2阶段分类准确率
+        m2_phase_pred_labels = np.argmax(pred_m2_phase, axis=1)
+        m2_phase_accuracy = np.mean(m2_phase_pred_labels == y_m2_phase_test)
 
         # 参数预测MAE
         params_mae = np.mean(np.abs(pred_params - y_params_test), axis=0)
@@ -336,7 +373,8 @@ class 运动AI模型:
         # 打印评估结果
         print(f"\n测试集评估结果:")
         print(f"  场景分类准确率: {scene_accuracy*100:.2f}%")
-        print(f"  阶段分类准确率: {phase_accuracy*100:.2f}%")
+        print(f"  m1阶段分类准确率: {m1_phase_accuracy*100:.2f}%")
+        print(f"  m2阶段分类准确率: {m2_phase_accuracy*100:.2f}%")
         print(f"  参数预测MAE:")
         print(f"    delta_torque: {params_mae[0]:.4f}")
         print(f"    delta_kd: {params_mae[1]:.4f}")
@@ -345,7 +383,7 @@ class 运动AI模型:
         # 保存详细报告
         with open(输出文件, 'w', encoding='utf-8') as f:
             f.write("=" * 70 + "\n")
-            f.write("模型评估报告\n")
+            f.write("双腿联合模型评估报告\n")
             f.write("=" * 70 + "\n\n")
 
             f.write(f"测试集样本数: {len(X_test)}\n\n")
@@ -356,15 +394,27 @@ class 运动AI模型:
             f.write(f"准确率: {scene_accuracy*100:.2f}%\n\n")
 
             f.write("-" * 70 + "\n")
-            f.write("阶段分类性能\n")
+            f.write("m1阶段分类性能\n")
             f.write("-" * 70 + "\n")
-            f.write(f"准确率: {phase_accuracy*100:.2f}%\n")
+            f.write(f"准确率: {m1_phase_accuracy*100:.2f}%\n")
 
             # 计算每个阶段的准确率
             for label in range(self.阶段数):
-                mask = y_phase_test == label
+                mask = y_m1_phase_test == label
                 if np.any(mask):
-                    acc = np.mean(phase_pred_labels[mask] == label)
+                    acc = np.mean(m1_phase_pred_labels[mask] == label)
+                    f.write(f"  阶段{label}准确率: {acc*100:.2f}%\n")
+
+            f.write("\n" + "-" * 70 + "\n")
+            f.write("m2阶段分类性能\n")
+            f.write("-" * 70 + "\n")
+            f.write(f"准确率: {m2_phase_accuracy*100:.2f}%\n")
+
+            # 计算每个阶段的准确率
+            for label in range(self.阶段数):
+                mask = y_m2_phase_test == label
+                if np.any(mask):
+                    acc = np.mean(m2_phase_pred_labels[mask] == label)
                     f.write(f"  阶段{label}准确率: {acc*100:.2f}%\n")
 
             f.write("\n" + "-" * 70 + "\n")
@@ -380,13 +430,13 @@ class 运动AI模型:
 
 def 加载训练数据(npz_file):
     """
-    加载训练数据NPZ文件
+    加载训练数据NPZ文件（双腿联合格式）
 
     参数:
         npz_file: NPZ文件路径
 
     返回:
-        X, y_phase, y_params: 数据数组
+        X, y_m1_phase, y_m2_phase, y_params: 数据数组
     """
     print(f"\n加载训练数据: {npz_file}")
     data = np.load(npz_file, allow_pickle=True)
@@ -394,15 +444,17 @@ def 加载训练数据(npz_file):
     print(f"NPZ文件包含键: {list(data.keys())}")
 
     X = data['X']
-    y_phase = data['y_phase']
+    y_m1_phase = data['y_m1_phase']
+    y_m2_phase = data['y_m2_phase']
     y_params = data['y_params']
 
     print(f"✓ 数据加载完成:")
     print(f"  X shape: {X.shape}")
-    print(f"  y_phase shape: {y_phase.shape}")
+    print(f"  y_m1_phase shape: {y_m1_phase.shape}")
+    print(f"  y_m2_phase shape: {y_m2_phase.shape}")
     print(f"  y_params shape: {y_params.shape}")
 
-    return X, y_phase, y_params
+    return X, y_m1_phase, y_m2_phase, y_params
 
 
 def main():
@@ -423,11 +475,11 @@ def main():
     args = parser.parse_args()
 
     print("=" * 70)
-    print("AI模型训练 - 运动阶段识别与参数调整")
+    print("双腿联合AI模型训练 - 运动阶段识别与参数调整")
     print("=" * 70)
 
     # 1. 加载数据
-    X, y_phase, y_params = 加载训练数据(args.input)
+    X, y_m1_phase, y_m2_phase, y_params = 加载训练数据(args.input)
 
     # 2. 生成场景标签（当前数据集来自单一场景）
     场景映射 = {'平地': 0, '爬楼': 1}
@@ -437,11 +489,15 @@ def main():
 
     # 3. 划分训练集和验证集
     print(f"\n划分数据集 (验证集比例={args.val_split})...")
-    X_train, X_val, y_scene_train, y_scene_val, y_phase_train, y_phase_val, y_params_train, y_params_val = train_test_split(
-        X, y_scene, y_phase, y_params,
+    # 使用m1_phase进行分层采样（可以考虑同时使用m1和m2，但这里简化为m1）
+    X_train, X_val, y_scene_train, y_scene_val, \
+    y_m1_phase_train, y_m1_phase_val, \
+    y_m2_phase_train, y_m2_phase_val, \
+    y_params_train, y_params_val = train_test_split(
+        X, y_scene, y_m1_phase, y_m2_phase, y_params,
         test_size=args.val_split,
         random_state=42,
-        stratify=y_phase  # 按阶段分层采样
+        stratify=y_m1_phase  # 按m1阶段分层采样
     )
 
     print(f"训练集: {len(X_train)} 样本")
@@ -454,8 +510,8 @@ def main():
 
     # 5. 训练模型
     模型.训练模型(
-        X_train, y_scene_train, y_phase_train, y_params_train,
-        X_val, y_scene_val, y_phase_val, y_params_val,
+        X_train, y_scene_train, y_m1_phase_train, y_m2_phase_train, y_params_train,
+        X_val, y_scene_val, y_m1_phase_val, y_m2_phase_val, y_params_val,
         epochs=args.epochs,
         batch_size=args.batch_size
     )
@@ -463,21 +519,12 @@ def main():
     # 6. 保存模型
     模型.保存模型(输出文件=args.output)
 
-    # 7. 可视化训练历史
-    模型.可视化训练历史()
-
-    # 8. 评估模型（使用验证集作为测试集）
-    模型.评估模型(X_val, y_scene_val, y_phase_val, y_params_val)
-
     print("\n" + "=" * 70)
     print("✓ 模型训练完成！")
     print("=" * 70)
     print(f"\n生成文件:")
     print(f"  - {args.output}")
     print(f"  - {args.output.replace('.h5', '.weights.h5')}")
-    print(f"  - training_history.png")
-    print(f"  - model_evaluation.txt")
-    print(f"  - best_model_checkpoint.h5")
 
 
 if __name__ == '__main__':

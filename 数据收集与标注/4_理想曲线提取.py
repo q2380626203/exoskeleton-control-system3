@@ -14,9 +14,6 @@
 # 同时提取双腿（m1和m2）理想曲线（默认）
 python 4_理想曲线提取.py --input 平地数据_已修正.csv --scene 平地
 
-# 或指定只提取单腿
-python 4_理想曲线提取.py --input 平地数据_已修正.csv --scene 平地 --motor m1
-python 4_理想曲线提取.py --input 平地数据_已修正.csv --scene 平地 --motor m2
 
 # 也可使用已标注文件
 python 4_理想曲线提取.py --input 平地数据_已标注.csv --scene 平地

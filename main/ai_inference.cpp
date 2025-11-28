@@ -1,10 +1,20 @@
 /**
- * AI推理模块 - TensorFlow Lite Micro
+ * AI推理模块 - TensorFlow Lite Micro（双腿联合模型）
  *
  * 功能：
  * 1. 加载嵌入的量化模型
- * 2. 运行推理识别运动阶段
+ * 2. 运行推理识别运动阶段（双腿联合）
  * 3. 输出参数调整建议
+ *
+ * 输入格式：
+ * - m1速度窗口 [50] + m1位置窗口 [50] + m2速度窗口 [50] + m2位置窗口 [50]
+ * - 组合为 [50, 4] 输入张量：[m1_vel, m1_pos, m2_vel, m2_pos] per timestep
+ *
+ * 输出格式：
+ * - 输出0: 场景分类 [1, 2] - (平地, 爬楼)
+ * - 输出1: m1阶段分类 [1, 3] - (静止, 抬腿, 压腿)
+ * - 输出2: m2阶段分类 [1, 3] - (静止, 抬腿, 压腿)
+ * - 输出3: 参数调整 [1, 3] - (delta_torque, delta_kd, delta_scale)
  */
 
 #include "ai_inference.h"
@@ -148,30 +158,32 @@ bool ai_model_init(void) {
     ESP_LOGI(TAG, "  Arena used: %d / %d bytes",
              interpreter->arena_used_bytes(), kTensorArenaSize);
     ESP_LOGI(TAG, "  Inputs count: %d", interpreter->inputs_size());
-    ESP_LOGI(TAG, "  Outputs count: %d", interpreter->outputs_size());
+    ESP_LOGI(TAG, "  Outputs count: %d (scene, m1_phase, m2_phase, params)", interpreter->outputs_size());
 
     model_initialized = true;
     return true;
 }
 
 /**
- * 运行AI推理
+ * 运行AI推理（双腿联合模型，仅速度）
  */
-bool ai_run_inference(const float velocity_window[50], ai_inference_result_t *result) {
+bool ai_run_inference(const float m1_velocity_window[50], const float m2_velocity_window[50],
+                      ai_inference_result_t *result) {
     if (!model_initialized || !interpreter || !input_tensor) {
         ESP_LOGE(TAG, "Model not initialized! Call ai_model_init() first");
         return false;
     }
 
-    if (!velocity_window || !result) {
+    if (!m1_velocity_window || !m2_velocity_window || !result) {
         ESP_LOGE(TAG, "Invalid parameters");
         return false;
     }
 
     // 填充输入数据到张量
-    // 输入形状应该是 [1, 50, 1]
+    // 输入形状: [1, 50, 2] - 每个时间步包含 [m1_vel, m2_vel]
     for (int i = 0; i < 50; i++) {
-        input_tensor->data.f[i] = velocity_window[i];
+        input_tensor->data.f[i * 2 + 0] = m1_velocity_window[i];  // 通道0: m1速度
+        input_tensor->data.f[i * 2 + 1] = m2_velocity_window[i];  // 通道1: m2速度
     }
 
     // 执行推理
@@ -182,16 +194,19 @@ bool ai_run_inference(const float velocity_window[50], ai_inference_result_t *re
     }
 
     // 获取输出张量
-    // 注意：实际模型输出顺序与训练时定义不同！
-    // 输出0: 阶段分类 [1, 3] - (静止, 抬腿, 压腿)
-    // 输出1: 场景分类 [1, 2] - (平地, 爬楼)
-    // 输出2: 参数调整 [1, 3] - (delta_torque, delta_kd, delta_scale)
+    // 注意：TFLite转换后输出顺序与H5模型不同！
+    // TFLite实际输出顺序（通过debug_model_outputs.py验证）：
+    // 输出0: m1阶段分类 [1, 3] - (静止, 抬腿, 压腿)
+    // 输出1: 参数调整 [1, 3] - (delta_torque, delta_kd, delta_scale)
+    // 输出2: 场景分类 [1, 2] - (平地, 爬楼)
+    // 输出3: m2阶段分类 [1, 3] - (静止, 抬腿, 压腿)
 
-    TfLiteTensor* output_phase = interpreter->output(0);  // 修正：输出0是阶段
-    TfLiteTensor* output_scene = interpreter->output(1);  // 修正：输出1是场景
-    TfLiteTensor* output_params = interpreter->output(2);
+    TfLiteTensor* output_m1_phase = interpreter->output(0);  // 修正：TFLite输出0是m1_phase
+    TfLiteTensor* output_params = interpreter->output(1);    // 修正：TFLite输出1是params
+    TfLiteTensor* output_scene = interpreter->output(2);     // 修正：TFLite输出2是scene
+    TfLiteTensor* output_m2_phase = interpreter->output(3);  // 修正：TFLite输出3是m2_phase
 
-    if (!output_scene || !output_phase || !output_params) {
+    if (!output_scene || !output_m1_phase || !output_m2_phase || !output_params) {
         ESP_LOGE(TAG, "Failed to get output tensors");
         return false;
     }
@@ -212,13 +227,23 @@ bool ai_run_inference(const float velocity_window[50], ai_inference_result_t *re
     }
     */
 
-    // 解析阶段 (0: 静止, 1: 抬腿, 2: 压腿)
-    result->phase = 0;
-    result->phase_confidence = output_phase->data.f[0];
+    // 解析m1阶段 (0: 静止, 1: 抬腿, 2: 压腿)
+    result->m1_phase = 0;
+    result->m1_phase_confidence = output_m1_phase->data.f[0];
     for (int i = 1; i < 3; i++) {
-        if (output_phase->data.f[i] > result->phase_confidence) {
-            result->phase = i;
-            result->phase_confidence = output_phase->data.f[i];
+        if (output_m1_phase->data.f[i] > result->m1_phase_confidence) {
+            result->m1_phase = i;
+            result->m1_phase_confidence = output_m1_phase->data.f[i];
+        }
+    }
+
+    // 解析m2阶段 (0: 静止, 1: 抬腿, 2: 压腿)
+    result->m2_phase = 0;
+    result->m2_phase_confidence = output_m2_phase->data.f[0];
+    for (int i = 1; i < 3; i++) {
+        if (output_m2_phase->data.f[i] > result->m2_phase_confidence) {
+            result->m2_phase = i;
+            result->m2_phase_confidence = output_m2_phase->data.f[i];
         }
     }
 
@@ -236,8 +261,10 @@ bool ai_run_inference(const float velocity_window[50], ai_inference_result_t *re
     ESP_LOGI(TAG, "推理结果:");
     ESP_LOGI(TAG, "  场景: %s (%.1f%%)",
              scene_names[result->scene], result->scene_confidence * 100);
-    ESP_LOGI(TAG, "  阶段: %s (%.1f%%)",
-             phase_names[result->phase], result->phase_confidence * 100);
+    ESP_LOGI(TAG, "  m1阶段: %s (%.1f%%)",
+             phase_names[result->m1_phase], result->m1_phase_confidence * 100);
+    ESP_LOGI(TAG, "  m2阶段: %s (%.1f%%)",
+             phase_names[result->m2_phase], result->m2_phase_confidence * 100);
     ESP_LOGI(TAG, "  参数调整: Δtorque=%.3f, Δkd=%.3f, Δscale=%.3f",
              result->delta_torque, result->delta_kd, result->delta_scale);
     */

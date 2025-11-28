@@ -17,7 +17,7 @@ python 2_数据自动标注.py --input 平地数据.csv --output 平地数据_�
 
 注意：
 - 左腿(m1): 速度正向=抬腿，速度负向=压腿
-- 右腿(m2): 速度正向=抬腿，速度负向=压腿（与左腿相同）
+- 右腿(m2): 速度负向=抬腿，速度正向=压腿（运动方向与左腿相反）
 """
 
 import pandas as pd
@@ -45,9 +45,9 @@ class 运动阶段标注器:
     1 = LIFTING (抬腿)：速度正向 & 位置上升
     2 = PRESSING (压腿)：速度负向 & 位置下降
 
-    右腿(m2)标注规则（与左腿相同）：
-    1 = LIFTING (抬腿)：速度正向 & 位置上升
-    2 = PRESSING (压腿)：速度负向 & 位置下降
+    右腿(m2)标注规则（运动方向与左腿相反）：
+    1 = LIFTING (抬腿)：速度负向 & 位置下降
+    2 = PRESSING (压腿)：速度正向 & 位置上升
     """
 
     # 阶段编码
@@ -205,9 +205,10 @@ class 运动阶段标注器:
         标签1 = self.标注单个电机(df, 速度列='m1_vel', 位置列='m1_pos', 反转=False)
         标签1 = self.后处理优化(标签1)
 
-        # 标注右腿(m2) - 使用与左腿相同的逻辑
+        # 标注右腿(m2) - 右腿物理运动方向与左腿相反
+        # 右腿: 速度负向=抬腿, 速度正向=压腿
         print(f"  - 标注右腿(m2)...")
-        标签2 = self.标注单个电机(df, 速度列='m2_vel', 位置列='m2_pos', 反转=False)
+        标签2 = self.标注单个电机(df, 速度列='m2_vel', 位置列='m2_pos', 反转=True)
         标签2 = self.后处理优化(标签2)
 
         # 添加标签列
@@ -473,10 +474,6 @@ def main():
     if not args.no_viz:
         viz_file = str(Path(args.output).parent / f"{Path(args.output).stem}_可视化.png")
         可视化标注结果(df, 输出文件=viz_file)
-
-    # 统计报告
-    report_file = str(Path(args.output).parent / f"{Path(args.output).stem}_报告.txt")
-    生成统计报告(df, 输出文件=report_file)
 
     print("\n✓ 标注完成！")
 

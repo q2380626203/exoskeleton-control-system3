@@ -39,7 +39,7 @@ SpeedFollowMode speed_follow; // 速度跟随模式实例
 motor_position_buffers_t position_buffers; // 位置缓存区
 
 // ==================== AI推理相关 ====================
-// 速度窗口缓冲区 (m1和m2各50个速度采样点)
+// 速度窗口缓冲区 (m1和m2各50个采样点，仅速度)
 #define AI_WINDOW_SIZE 50
 static float m1_velocity_window[AI_WINDOW_SIZE] = {0};
 static float m2_velocity_window[AI_WINDOW_SIZE] = {0};
@@ -471,16 +471,12 @@ void motor_control_task(void *pvParameters) {
             if (ai_window_index >= AI_WINDOW_SIZE) {
                 // 只有在AI模型就绪时才推理
                 if (ai_model_ready) {
-                    // m1推理
-                    ai_inference_result_t m1_result;
-                    if (ai_run_inference(m1_velocity_window, &m1_result)) {
-                        m1_predicted_phase = m1_result.phase;
-                    }
-
-                    // m2推理
-                    ai_inference_result_t m2_result;
-                    if (ai_run_inference(m2_velocity_window, &m2_result)) {
-                        m2_predicted_phase = m2_result.phase;
+                    // 双腿联合推理 (仅速度)
+                    ai_inference_result_t result;
+                    if (ai_run_inference(m1_velocity_window, m2_velocity_window, &result)) {
+                        // 从单次推理结果中获取两腿的阶段预测
+                        m1_predicted_phase = result.m1_phase;
+                        m2_predicted_phase = result.m2_phase;
                     }
                 }
             }

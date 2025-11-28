@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /**
- * AI推理结果结构体
+ * AI推理结果结构体（双腿联合模型）
  */
 typedef struct {
     // 场景识别 (0: 平地, 1: 爬楼)
@@ -17,9 +17,13 @@ typedef struct {
     int scene;
     float scene_confidence;
 
-    // 阶段识别 (0: 静止, 1: 抬腿, 2: 压腿)
-    int phase;
-    float phase_confidence;
+    // m1阶段识别 (0: 静止, 1: 抬腿, 2: 压腿)
+    int m1_phase;
+    float m1_phase_confidence;
+
+    // m2阶段识别 (0: 静止, 1: 抬腿, 2: 压腿)
+    int m2_phase;
+    float m2_phase_confidence;
 
     // 参数调整建议
     float delta_torque;   // 扭矩调整
@@ -37,13 +41,15 @@ typedef struct {
 bool ai_model_init(void);
 
 /**
- * 运行AI推理
+ * 运行AI推理（双腿联合模型，仅速度）
  *
- * @param velocity_window 速度窗口数据 (长度必须为50)
- * @param result 推理结果输出
+ * @param m1_velocity_window m1速度窗口数据 (长度必须为50)
+ * @param m2_velocity_window m2速度窗口数据 (长度必须为50)
+ * @param result 推理结果输出（包含m1和m2的阶段预测）
  * @return true: 成功, false: 失败
  */
-bool ai_run_inference(const float velocity_window[50], ai_inference_result_t *result);
+bool ai_run_inference(const float m1_velocity_window[50], const float m2_velocity_window[50],
+                      ai_inference_result_t *result);
 
 /**
  * 获取模型信息
