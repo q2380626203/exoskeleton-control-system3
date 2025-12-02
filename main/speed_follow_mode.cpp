@@ -28,7 +28,7 @@ SpeedFollowMode::SpeedFollowMode()
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
       _global_mutex(nullptr), _diff_buffers(nullptr),
-      _mode_type(SPEED_FOLLOW_MODE_AI), _ai_m1_phase(0), _ai_m2_phase(0),
+      _mode_type(SPEED_FOLLOW_MODE_PROGRAM), _ai_m1_phase(0), _ai_m2_phase(0),
       _current_m1_phase(0), _current_m2_phase(0), _both_static_start_time(0) {
 }
 
@@ -97,16 +97,16 @@ void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, 
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
     _config_motor1.trigger_speed = 5.0f;   // 触发速度：+0.75 rad/s (电机1)
-    _config_motor1.phase1_duration_ms = 500;
-    _config_motor1.phase2_duration_ms = 350;
-    _config_motor1.waiting_duration_ms = 300;  // 等待时间
-    _config_motor1.idle_duration_ms = 100;      // 空闲时间
+    _config_motor1.phase1_duration_ms = 300;
+    _config_motor1.phase2_duration_ms = 300;
+    _config_motor1.waiting_duration_ms = 5;  // 等待时间
+    _config_motor1.idle_duration_ms = 5;      // 空闲时间
 
     // 电机1第一阶段参数：1 0.0 +15 +0.9 0.0 0.04
     _config_motor1.phase1.mode = 1;
     _config_motor1.phase1.pos = 0.0f;
     _config_motor1.phase1.vel = 10.0f;
-    _config_motor1.phase1.torque = 0.7f;
+    _config_motor1.phase1.torque = 1.1f;
     _config_motor1.phase1.kp = 0.0f;
     _config_motor1.phase1.kd = 0.08f;
 
@@ -128,16 +128,16 @@ void SpeedFollowMode::init() {
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
     _config_motor2.trigger_speed = -5.0f;  // 触发速度：-0.75 rad/s (电机2)
-    _config_motor2.phase1_duration_ms = 500;
-    _config_motor2.phase2_duration_ms = 350;
-    _config_motor2.waiting_duration_ms = 300;  // 等待时间：300ms
-    _config_motor2.idle_duration_ms = 100;      // 空闲时间：50ms
+    _config_motor2.phase1_duration_ms = 300;
+    _config_motor2.phase2_duration_ms = 300;
+    _config_motor2.waiting_duration_ms = 5;  // 等待时间：300ms
+    _config_motor2.idle_duration_ms = 5;      // 空闲时间：50ms
 
     // 电机2第一阶段参数：1 0.0 -15 -0.9 0.0 0.04
     _config_motor2.phase1.mode = 1;
     _config_motor2.phase1.pos = 0.0f;
     _config_motor2.phase1.vel = -10.0f;
-    _config_motor2.phase1.torque = -0.7f;
+    _config_motor2.phase1.torque = -1.1f;
     _config_motor2.phase1.kp = 0.0f;
     _config_motor2.phase1.kd = 0.08f;
 

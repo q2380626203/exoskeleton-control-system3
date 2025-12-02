@@ -9,8 +9,8 @@
 
 // 阶段判断模式
 typedef enum {
-    SPEED_FOLLOW_MODE_AI,        // AI模式（默认）
-    SPEED_FOLLOW_MODE_PROGRAM    // 程序硬编模式
+    SPEED_FOLLOW_MODE_AI,        // AI模式
+    SPEED_FOLLOW_MODE_PROGRAM    // 程序硬编模式（默认）
 } speed_follow_mode_type_t;
 
 // 速度跟随模式状态
