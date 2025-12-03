@@ -23,6 +23,7 @@ SpeedFollowMode::SpeedFollowMode()
       _threshold_value(10.0f), _first_trigger_detected(false),
       _triggered_channel(0), _waiting_start_time(0),
       _captured_velocity(0.0f), _phase1_timeout_ms(500), _phase2_timeout_ms(350), _velocity_scale(0.8f), _phase2_vel_threshold(0.5f),
+      _phase2_peak_velocity(0.0f), _phase2_peak_time(0), _phase2_decrease_ratio(0.8f),
       _motor1_id(nullptr), _motor1_mode(nullptr), _motor1_pos(nullptr),
       _motor1_vel(nullptr), _motor1_t(nullptr), _motor1_kp(nullptr), _motor1_kd(nullptr),
       _motor2_id(nullptr), _motor2_mode(nullptr), _motor2_pos(nullptr),
@@ -96,7 +97,7 @@ void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, 
  */
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
-    _config_motor1.trigger_speed = 5.0f;   // 触发速度：+0.75 rad/s (电机1)
+    _config_motor1.trigger_speed = 2.0f;   // 触发速度：+0.75 rad/s (电机1)
     _config_motor1.phase1_duration_ms = 300;
     _config_motor1.phase2_duration_ms = 300;
     _config_motor1.waiting_duration_ms = 5;  // 等待时间
@@ -106,7 +107,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase1.mode = 1;
     _config_motor1.phase1.pos = 0.0f;
     _config_motor1.phase1.vel = 10.0f;
-    _config_motor1.phase1.torque = 1.1f;
+    _config_motor1.phase1.torque = 1.0f;
     _config_motor1.phase1.kp = 0.0f;
     _config_motor1.phase1.kd = 0.08f;
 
@@ -114,9 +115,9 @@ void SpeedFollowMode::init() {
     _config_motor1.phase2.mode = 1;
     _config_motor1.phase2.pos = 0.0f;
     _config_motor1.phase2.vel = -10.0f;
-    _config_motor1.phase2.torque = -0.3f;
+    _config_motor1.phase2.torque = -1.0f;
     _config_motor1.phase2.kp = 0.0f;
-    _config_motor1.phase2.kd = 0.03f;
+    _config_motor1.phase2.kd = 0.08f;
 
     // 电机1空闲状态参数：1 0.0 0.0 0.0 0.0 0.0
     _config_motor1.idle.mode = 1;
@@ -127,7 +128,7 @@ void SpeedFollowMode::init() {
     _config_motor1.idle.kd = 0.0f;
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
-    _config_motor2.trigger_speed = -5.0f;  // 触发速度：-0.75 rad/s (电机2)
+    _config_motor2.trigger_speed = -2.0f;  // 触发速度：-0.75 rad/s (电机2)
     _config_motor2.phase1_duration_ms = 300;
     _config_motor2.phase2_duration_ms = 300;
     _config_motor2.waiting_duration_ms = 5;  // 等待时间：300ms
@@ -137,7 +138,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase1.mode = 1;
     _config_motor2.phase1.pos = 0.0f;
     _config_motor2.phase1.vel = -10.0f;
-    _config_motor2.phase1.torque = -1.1f;
+    _config_motor2.phase1.torque = -1.0f;
     _config_motor2.phase1.kp = 0.0f;
     _config_motor2.phase1.kd = 0.08f;
 
@@ -145,9 +146,9 @@ void SpeedFollowMode::init() {
     _config_motor2.phase2.mode = 1;
     _config_motor2.phase2.pos = 0.0f;
     _config_motor2.phase2.vel = 10.0f;
-    _config_motor2.phase2.torque = 0.3f;
+    _config_motor2.phase2.torque = 1.0f;
     _config_motor2.phase2.kp = 0.0f;
-    _config_motor2.phase2.kd = 0.03f;
+    _config_motor2.phase2.kd = 0.08f;
 
     // 电机2空闲状态参数：1 0.0 0.0 0.0 0.0 0.0
     _config_motor2.idle.mode = 1;
@@ -619,6 +620,10 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_PHASE2;
                     _phase_start_time = current_time;
 
+                    // 重置PHASE2峰值检测参数
+                    _phase2_peak_velocity = 0.0f;
+                    _phase2_peak_time = 0;
+
                     // 如果当前接收的就是抬腿电机的数据，立即设置PHASE2参数
                     if ((_lifting_motor == 1 && motor_data.id == 1) ||
                         (_lifting_motor == 2 && motor_data.id == 2)) {
@@ -650,7 +655,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             break;
 
         case SPEED_FOLLOW_PHASE2:
-            // 压腿阶段 - 程序模式专用：超时+速度近零检测
+            // 压腿阶段 - 程序模式专用：超时+速度峰值检测
             {
                 bool should_transition = false;
 
@@ -659,20 +664,40 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     should_transition = true;
                     ESP_LOGI(TAG, "⏱️ PHASE2超时(%dms)，强制进入IDLE", _phase2_timeout_ms);
                 }
-                // 检查速度是否回到低速区间（压腿完成）
+                // 检查速度峰值（压腿完成）
                 else if (_lifting_motor == 1 && motor_data.id == 1) {
-                    // 电机1：速度降低到阈值范围内（-v到+v之间，接近零速）
-                    if (motor_data.vel > -_phase2_vel_threshold && motor_data.vel < _phase2_vel_threshold) {
+                    // 电机1：压腿时速度为负值（向下），取绝对值
+                    float abs_vel = (motor_data.vel < 0) ? -motor_data.vel : motor_data.vel;
+
+                    // 检测速度是否达到峰值（当前速度开始下降）
+                    if (_phase2_peak_velocity > _phase2_vel_threshold && abs_vel < _phase2_peak_velocity) {
+                        // 速度开始下降，说明已达到峰值
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机1速度降低到阈值内(%.3f)，完成压腿", motor_data.vel);
+                        ESP_LOGI(TAG, "🔄 电机1速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
+                                _phase2_peak_velocity, abs_vel);
+                    } else if (abs_vel > _phase2_peak_velocity) {
+                        // 更新峰值速度
+                        _phase2_peak_velocity = abs_vel;
+                        _phase2_peak_time = current_time;
                     }
+
                     _current_m1_phase = 2;  // 压腿中
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
-                    // 电机2：速度降低到阈值范围内（-v到+v之间，接近零速）
-                    if (motor_data.vel > -_phase2_vel_threshold && motor_data.vel < _phase2_vel_threshold) {
+                    // 电机2：压腿时速度为正值（向下），取绝对值
+                    float abs_vel = (motor_data.vel > 0) ? motor_data.vel : -motor_data.vel;
+
+                    // 检测速度是否达到峰值（当前速度开始下降）
+                    if (_phase2_peak_velocity > _phase2_vel_threshold && abs_vel < _phase2_peak_velocity) {
+                        // 速度开始下降，说明已达到峰值
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机2速度降低到阈值内(%.3f)，完成压腿", motor_data.vel);
+                        ESP_LOGI(TAG, "🔄 电机2速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
+                                _phase2_peak_velocity, abs_vel);
+                    } else if (abs_vel > _phase2_peak_velocity) {
+                        // 更新峰值速度
+                        _phase2_peak_velocity = abs_vel;
+                        _phase2_peak_time = current_time;
                     }
+
                     _current_m2_phase = 2;  // 压腿中
                 }
 

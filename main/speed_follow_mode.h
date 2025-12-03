@@ -184,6 +184,11 @@ private:
     float _velocity_scale;          // 速度缩放因子（默认0.8）
     float _phase2_vel_threshold;    // PHASE2完成速度阈值（默认0.5 rad/s）
 
+    // PHASE2峰值检测参数
+    float _phase2_peak_velocity;    // PHASE2阶段的速度峰值（绝对值）
+    uint32_t _phase2_peak_time;     // 速度峰值出现的时间
+    float _phase2_decrease_ratio;   // 速度下降比例阈值（默认0.8，即峰值的80%时判定为完成）
+
     // 电机1全局参数指针
     uint8_t* _motor1_id;
     uint8_t* _motor1_mode;

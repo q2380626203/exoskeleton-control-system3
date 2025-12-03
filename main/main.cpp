@@ -29,9 +29,9 @@ static httpd_handle_t web_server = NULL;
 #define MOTOR_ID_1      0x01
 #define MOTOR_ID_2      0x02
 #define UART_PORT_NUM   UART_NUM_2
-#define UART_TX_PIN     GPIO_NUM_11
+#define UART_TX_PIN     GPIO_NUM_12
 #define UART_RX_PIN     GPIO_NUM_13
-#define MAX485_RE_DE_PIN GPIO_NUM_12  // DE/RE控制引脚，拉高进入自动流控模式
+#define MAX485_RE_DE_PIN GPIO_NUM_11  // DE/RE控制引脚，拉高进入自动流控模式
 #define UART_BAUD_RATE  4000000
 
 UnitreeMotorDriver motor_driver;
@@ -590,28 +590,28 @@ extern "C" void app_main() {
         return;
     }
 
-    // // 初始化WiFi热点
-    // ESP_LOGI(TAG, "正在初始化WiFi热点...");
-    // if (wifi_init_softap() != ESP_OK) {
-    //     ESP_LOGE(TAG, "WiFi热点初始化失败！");
-    //     return;
-    // }
+    // 初始化WiFi热点
+    ESP_LOGI(TAG, "正在初始化WiFi热点...");
+    if (wifi_init_softap() != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi热点初始化失败！");
+        return;
+    }
 
-    // // 启动Web服务器
-    // ESP_LOGI(TAG, "正在启动Web服务器...");
-    // web_server = start_webserver();
-    // if (web_server == NULL) {
-    //     ESP_LOGE(TAG, "Web服务器启动失败！");
-    //     return;
-    // }
+    // 启动Web服务器
+    ESP_LOGI(TAG, "正在启动Web服务器...");
+    web_server = start_webserver();
+    if (web_server == NULL) {
+        ESP_LOGE(TAG, "Web服务器启动失败！");
+        return;
+    }
 
-    // // 注册Web服务器回调函数
-    // register_command_handler(handle_web_command);
-    // register_param_handler(handle_web_param);
-    // register_motor_param_handler(handle_web_motor_param);
-    // register_motor_param_getter(handle_web_get_motor_param);
-    // register_state_getter(handle_web_get_state);
-    // ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
+    // 注册Web服务器回调函数
+    register_command_handler(handle_web_command);
+    register_param_handler(handle_web_param);
+    register_motor_param_handler(handle_web_motor_param);
+    register_motor_param_getter(handle_web_get_motor_param);
+    register_state_getter(handle_web_get_state);
+    ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
 
     // 配置MAX485 DE/RE引脚为输出并拉高，进入自动流控模式
     gpio_config_t io_conf = {};
