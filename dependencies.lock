@@ -27,9 +27,16 @@ dependencies:
     source:
       type: idf
     version: 6.0.0
+  nimble_central_utils:
+    dependencies: []
+    source:
+      path: F:\esp_idf\v6.0-dev\esp-idf\examples\bluetooth\nimble\common\nimble_central_utils
+      type: local
+    version: '*'
 direct_dependencies:
 - espressif/esp-tflite-micro
 - idf
-manifest_hash: bfe4762094556ae49d7fee4e9f0a0c7632228fdda9bbbb8d92d8d593d176ad94
+- nimble_central_utils
+manifest_hash: 6deb8deddc90f2a6eed31c87eb06f5ca4ad6a4aaccdba83461a8599ca194f1d2
 target: esp32s3
 version: 2.0.0

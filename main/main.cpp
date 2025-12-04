@@ -16,6 +16,7 @@
 #include "voice_module.h"
 #include "button_detector.h"
 #include "ai_inference.h" // AI推理模块
+#include "bt_imu.h" // 蓝牙IMU模块
 
 static const char *TAG = "MAIN";
 
@@ -406,6 +407,14 @@ void motor_control_task(void *pvParameters) {
     // Local variables to hold the current parameters for both motors
     MotorParams current_motor_1, current_motor_2;
 
+    // 数据输出相关变量（循环外初始化，避免重复赋值）
+    float ch6_max = 0.0f;
+    float ch7_max = 0.0f;
+    float m1_ai_label = 0.0f;
+    float m2_ai_label = 0.0f;
+    float roll_left = 0.0f;
+    float roll_right = 0.0f;
+
     while (1) {
         // Safely read the global parameter values for both motors
         if (xSemaphoreTake(motor_params_mutex, portMAX_DELAY) == pdTRUE) {
@@ -474,8 +483,8 @@ void motor_control_task(void *pvParameters) {
             }
 
             // 获取ch6和ch7缓存区的最大值
-            float ch6_max = diff_buffer_get_ch6_max(&position_buffers);
-            float ch7_max = diff_buffer_get_ch7_max(&position_buffers);
+            ch6_max = diff_buffer_get_ch6_max(&position_buffers);
+            ch7_max = diff_buffer_get_ch7_max(&position_buffers);
 
             // 获取ch6和ch7经过滑动窗口平均滤波后的瞬时值
             //float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
@@ -514,8 +523,8 @@ void motor_control_task(void *pvParameters) {
             }
 
             // 使用AI推理结果作为标签输出
-            float m1_ai_label = (float)m1_predicted_phase;  // m1的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
-            float m2_ai_label = (float)m2_predicted_phase;  // m2的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
+            m1_ai_label = (float)m1_predicted_phase;  // m1的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
+            m2_ai_label = (float)m2_predicted_phase;  // m2的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
             // ==================== AI推理部分结束 ====================
 
             // 检查阈值并可能激活速度跟随模式
@@ -524,20 +533,34 @@ void motor_control_task(void *pvParameters) {
             // 使用 ch6_max 和 ch7_max 更新速度跟随模式
             speed_follow.update(motor_data_1, ch6_max, ch7_max);
             speed_follow.update(motor_data_2, ch6_max, ch7_max);
-
-
-
-            printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                   motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
-                   motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
-                   ch6_max, ch7_max, m1_ai_label, m2_ai_label);
         }
+
+        // 获取蓝牙IMU数据（不依赖电机通信状态）
+        bt_imu_data_t imu_data_left, imu_data_right;
+        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
+        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
+
+        // 仅在数据有效时更新roll值
+        if (imu_left_valid) {
+            roll_left = imu_data_left.roll;
+        }
+        if (imu_right_valid) {
+            roll_right = imu_data_right.roll;
+        }
+
+        // 打印数据（电机通信失败时，motor_data会使用上一次的值或初始值）
+        printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+               motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
+               motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
+               ch6_max, ch7_max, m1_ai_label, m2_ai_label,
+               roll_left, roll_right);
 
         loop_count++;
 
         // 关闭详细状态打印，只保留格式化的电机数据输出
-        // 数据按 "motors:ch0,ch1,ch2,ch3,ch4,ch5" 格式输出
+        // 数据按 "motors:ch0,ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8,ch9,ch10,ch11" 格式输出
         // ch0-ch2: 电机1的位置,速度,力矩; ch3-ch5: 电机2的位置,速度,力矩
+        // ch6-ch7: ch6_max, ch7_max; ch8-ch9: AI标签; ch10-ch11: IMU左右roll角度
 
         // 高频率控制: 2ms延时 = 500Hz控制频率
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -582,6 +605,15 @@ extern "C" void app_main() {
         //voice_speak(&voice_module, "AI模型加载失败");
     }
     // ==================== AI模型初始化结束 ====================
+
+    // ==================== 初始化蓝牙IMU模块 ====================
+    ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");
+    if (bt_imu_init_multi() == 0) {
+        ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");
+    } else {
+        ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");
+    }
+    // ==================== 蓝牙IMU模块初始化结束 ====================
 
     // 为电机参数创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();
