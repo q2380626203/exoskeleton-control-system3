@@ -107,7 +107,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase1.mode = 1;
     _config_motor1.phase1.pos = 0.0f;
     _config_motor1.phase1.vel = 10.0f;
-    _config_motor1.phase1.torque = 1.0f;
+    _config_motor1.phase1.torque = 0.7f;
     _config_motor1.phase1.kp = 0.0f;
     _config_motor1.phase1.kd = 0.08f;
 
@@ -138,7 +138,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase1.mode = 1;
     _config_motor2.phase1.pos = 0.0f;
     _config_motor2.phase1.vel = -10.0f;
-    _config_motor2.phase1.torque = -1.0f;
+    _config_motor2.phase1.torque = -0.7f;
     _config_motor2.phase1.kp = 0.0f;
     _config_motor2.phase1.kd = 0.08f;
 
