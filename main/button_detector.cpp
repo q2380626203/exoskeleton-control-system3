@@ -10,12 +10,16 @@ static const char *TAG = "BUTTON_DETECTOR";
 
 // 助力调整步长
 #define TORQUE_STEP 0.1f
-// 电机1 Phase1 力矩范围：0 ~ 2.0
+// 电机1 Phase1 力矩范围：0 ~ 1.7
 #define MOTOR1_TORQUE_MIN 0.0f
-#define MOTOR1_TORQUE_MAX 2.0f
-// 电机2 Phase1 力矩范围：-2.0 ~ 0
-#define MOTOR2_TORQUE_MIN -2.0f
+#define MOTOR1_TORQUE_MAX 1.7f
+// 电机2 Phase1 力矩范围：-1.7 ~ 0
+#define MOTOR2_TORQUE_MIN -1.7f
 #define MOTOR2_TORQUE_MAX 0.0f
+
+// 触发速度配置
+#define HIGH_TRIGGER_SPEED 7.0f      // 高触发速度（力矩 > 1.0）
+#define TRIGGER_SPEED_THRESHOLD 1.0f // 触发速度切换的力矩阈值
 
 // ============================================================================
 // 静态全局变量
@@ -30,6 +34,10 @@ static SwitchDetector power_switch;
 static button_press_callback_t on_assist_up_pressed = NULL;
 static button_press_callback_t on_assist_down_pressed = NULL;
 static switch_change_callback_t on_power_switch_changed = NULL;
+
+// 默认触发速度（从配置中读取）
+static float default_trigger_speed_motor1 = 3.0f;
+static float default_trigger_speed_motor2 = -3.0f;
 
 // ============================================================================
 // 外部引用
@@ -254,29 +262,43 @@ static const char* float_to_chinese_number(float value) {
  * @brief 助力增加按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
  * @note 增加电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 2.0，每次增加 TORQUE_STEP
- *       - 电机2: 范围 -2.0 ~ 0，每次增加力矩绝对值（更大的负值）
+ *       - 电机1: 范围 0 ~ 1.7，每次增加 TORQUE_STEP
+ *       - 电机2: 范围 -1.7 ~ 0，每次增加力矩绝对值（更大的负值）
+ *       - 力矩 > 1.0 时：触发速度设置为 ±7.0
+ *       - 力矩 <= 1.0 时：触发速度恢复为 ±3.0（默认值）
  */
 static void default_assist_up_callback(gpio_num_t pin) {
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
 
-    // 增加电机1的Phase1力矩（范围：0 ~ 1.5）
+    // 增加电机1的Phase1力矩（范围：0 ~ 1.7）
     float new_torque1 = motor1_config->phase1.torque + TORQUE_STEP;
     if (new_torque1 > MOTOR1_TORQUE_MAX) {
         new_torque1 = MOTOR1_TORQUE_MAX;
     }
     motor1_config->phase1.torque = new_torque1;
 
-    // 增加电机2的Phase1力矩**绝对值**（范围：-1.5 ~ 0，负号是方向，增加助力意味着更大的负值）
+    // 增加电机2的Phase1力矩**绝对值**（范围：-1.7 ~ 0，负号是方向，增加助力意味着更大的负值）
     float new_torque2 = motor2_config->phase1.torque - TORQUE_STEP;  // 减去0.1使其更负
     if (new_torque2 < MOTOR2_TORQUE_MIN) {
         new_torque2 = MOTOR2_TORQUE_MIN;
     }
     motor2_config->phase1.torque = new_torque2;
 
-    // ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+    // 根据力矩值动态调整触发速度
+    if (new_torque1 > TRIGGER_SPEED_THRESHOLD) {
+        // 力矩 > 1.0，设置高触发速度
+        motor1_config->trigger_speed = HIGH_TRIGGER_SPEED;
+        motor2_config->trigger_speed = -HIGH_TRIGGER_SPEED;
+    } else {
+        // 力矩 <= 1.0，恢复默认触发速度（从配置中读取）
+        motor1_config->trigger_speed = default_trigger_speed_motor1;
+        motor2_config->trigger_speed = default_trigger_speed_motor2;
+    }
+
+    // ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
+    //          new_torque1, new_torque2, motor1_config->trigger_speed);
 
     // 播放电机1的力矩绝对值（中文数字）
     const char* torque_text = float_to_chinese_number(new_torque1);
@@ -287,29 +309,43 @@ static void default_assist_up_callback(gpio_num_t pin) {
  * @brief 助力减少按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
  * @note 减少电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 2.0，每次减少 TORQUE_STEP
- *       - 电机2: 范围 -2.0 ~ 0，每次减少力矩绝对值（更小的负值）
+ *       - 电机1: 范围 0 ~ 1.7，每次减少 TORQUE_STEP
+ *       - 电机2: 范围 -1.7 ~ 0，每次减少力矩绝对值（更小的负值）
+ *       - 力矩 > 1.0 时：触发速度设置为 ±7.0
+ *       - 力矩 <= 1.0 时：触发速度恢复为 ±3.0（默认值）
  */
 static void default_assist_down_callback(gpio_num_t pin) {
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
 
-    // 减少电机1的Phase1力矩（范围：0 ~ 1.5）
+    // 减少电机1的Phase1力矩（范围：0 ~ 1.7）
     float new_torque1 = motor1_config->phase1.torque - TORQUE_STEP;
     if (new_torque1 < MOTOR1_TORQUE_MIN) {
         new_torque1 = MOTOR1_TORQUE_MIN;
     }
     motor1_config->phase1.torque = new_torque1;
 
-    // 减少电机2的Phase1力矩**绝对值**（范围：-1.5 ~ 0，负号是方向，减少助力意味着更小的负值）
+    // 减少电机2的Phase1力矩**绝对值**（范围：-1.7 ~ 0，负号是方向，减少助力意味着更小的负值）
     float new_torque2 = motor2_config->phase1.torque + TORQUE_STEP;  // 加上0.1使其更接近0
     if (new_torque2 > MOTOR2_TORQUE_MAX) {
         new_torque2 = MOTOR2_TORQUE_MAX;
     }
     motor2_config->phase1.torque = new_torque2;
 
-    // ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+    // 根据力矩值动态调整触发速度
+    if (new_torque1 > TRIGGER_SPEED_THRESHOLD) {
+        // 力矩 > 1.0，设置高触发速度
+        motor1_config->trigger_speed = HIGH_TRIGGER_SPEED;
+        motor2_config->trigger_speed = -HIGH_TRIGGER_SPEED;
+    } else {
+        // 力矩 <= 1.0，恢复默认触发速度（从配置中读取）
+        motor1_config->trigger_speed = default_trigger_speed_motor1;
+        motor2_config->trigger_speed = default_trigger_speed_motor2;
+    }
+
+    // ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
+    //          new_torque1, new_torque2, motor1_config->trigger_speed);
 
     // 播放电机1的力矩绝对值（中文数字）
     const char* torque_text = float_to_chinese_number(new_torque1);
@@ -383,7 +419,15 @@ void button_detector_task(void* param) {
     on_assist_down_pressed = default_assist_down_callback;
     on_power_switch_changed = default_power_switch_callback;
 
+    // 从配置中读取默认触发速度
+    speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
+    speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
+    default_trigger_speed_motor1 = motor1_config->trigger_speed;
+    default_trigger_speed_motor2 = motor2_config->trigger_speed;
+
     ESP_LOGI(TAG, "按键检测任务启动");
+    ESP_LOGI(TAG, "默认触发速度 - 电机1: %.1f, 电机2: %.1f",
+             default_trigger_speed_motor1, default_trigger_speed_motor2);
 
     while (1) {
         // 更新所有按键和开关状态
