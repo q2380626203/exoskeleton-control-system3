@@ -17,9 +17,6 @@ static const char *TAG = "BUTTON_DETECTOR";
 #define MOTOR2_TORQUE_MIN -1.7f
 #define MOTOR2_TORQUE_MAX 0.0f
 
-// 触发速度配置
-#define HIGH_TRIGGER_SPEED 7.0f      // 高触发速度（力矩 > 1.0）
-#define TRIGGER_SPEED_THRESHOLD 1.0f // 触发速度切换的力矩阈值
 
 // ============================================================================
 // 静态全局变量
@@ -35,9 +32,6 @@ static button_press_callback_t on_assist_up_pressed = NULL;
 static button_press_callback_t on_assist_down_pressed = NULL;
 static switch_change_callback_t on_power_switch_changed = NULL;
 
-// 默认触发速度（从配置中读取）
-static float default_trigger_speed_motor1 = 3.0f;
-static float default_trigger_speed_motor2 = -3.0f;
 
 // ============================================================================
 // 外部引用
@@ -286,16 +280,6 @@ static void default_assist_up_callback(gpio_num_t pin) {
     }
     motor2_config->phase1.torque = new_torque2;
 
-    // 根据力矩值动态调整触发速度
-    if (new_torque1 > TRIGGER_SPEED_THRESHOLD) {
-        // 力矩 > 1.0，设置高触发速度
-        motor1_config->trigger_speed = HIGH_TRIGGER_SPEED;
-        motor2_config->trigger_speed = -HIGH_TRIGGER_SPEED;
-    } else {
-        // 力矩 <= 1.0，恢复默认触发速度（从配置中读取）
-        motor1_config->trigger_speed = default_trigger_speed_motor1;
-        motor2_config->trigger_speed = default_trigger_speed_motor2;
-    }
 
     // ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
     //          new_torque1, new_torque2, motor1_config->trigger_speed);
@@ -333,16 +317,6 @@ static void default_assist_down_callback(gpio_num_t pin) {
     }
     motor2_config->phase1.torque = new_torque2;
 
-    // 根据力矩值动态调整触发速度
-    if (new_torque1 > TRIGGER_SPEED_THRESHOLD) {
-        // 力矩 > 1.0，设置高触发速度
-        motor1_config->trigger_speed = HIGH_TRIGGER_SPEED;
-        motor2_config->trigger_speed = -HIGH_TRIGGER_SPEED;
-    } else {
-        // 力矩 <= 1.0，恢复默认触发速度（从配置中读取）
-        motor1_config->trigger_speed = default_trigger_speed_motor1;
-        motor2_config->trigger_speed = default_trigger_speed_motor2;
-    }
 
     // ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
     //          new_torque1, new_torque2, motor1_config->trigger_speed);
@@ -419,16 +393,7 @@ void button_detector_task(void* param) {
     on_assist_down_pressed = default_assist_down_callback;
     on_power_switch_changed = default_power_switch_callback;
 
-    // 从配置中读取默认触发速度
-    speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
-    speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
-    default_trigger_speed_motor1 = motor1_config->trigger_speed;
-    default_trigger_speed_motor2 = motor2_config->trigger_speed;
-
-    ESP_LOGI(TAG, "按键检测任务启动");
-    ESP_LOGI(TAG, "默认触发速度 - 电机1: %.1f, 电机2: %.1f",
-             default_trigger_speed_motor1, default_trigger_speed_motor2);
-
+    
     while (1) {
         // 更新所有按键和开关状态
         button_detector_update(&assist_up_button);

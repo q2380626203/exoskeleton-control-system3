@@ -158,7 +158,7 @@ bool SpeedFollowMode::findRollDecrease(const imu_roll_window_t& window, float th
  */
 void SpeedFollowMode::init() {
     // 配置电机1速度跟随模式参数
-    _config_motor1.trigger_speed = 2.0f;   // 触发速度：+0.75 rad/s (电机1)
+    _config_motor1.trigger_speed = 3.0f;   // 触发速度：+0.75 rad/s (电机1)
     _config_motor1.phase1_duration_ms = 300;
     _config_motor1.phase2_duration_ms = 300;
     _config_motor1.waiting_duration_ms = 5;  // 等待时间
@@ -189,7 +189,7 @@ void SpeedFollowMode::init() {
     _config_motor1.idle.kd = 0.0f;
 
     // 配置电机2速度跟随模式参数（保持原有逻辑）
-    _config_motor2.trigger_speed = -2.0f;  // 触发速度：-0.75 rad/s (电机2)
+    _config_motor2.trigger_speed = -3.0f;  // 触发速度：-0.75 rad/s (电机2)
     _config_motor2.phase1_duration_ms = 300;
     _config_motor2.phase2_duration_ms = 300;
     _config_motor2.waiting_duration_ms = 5;  // 等待时间：300ms
@@ -394,6 +394,9 @@ void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
  * @note 此函数在motor_control_task中被调用两次（motor_data_1和motor_data_2）
  * @note 必须检查motor_data.id来判断当前处理的是哪个电机的数据
  * @note PHASE1/PHASE2使用实时速度*0.8动态更新电机参数
+ * @note 每次更新时根据phase1.torque动态调整trigger_speed：
+ *       - 力矩绝对值 <= 1.0：电机1触发速度 = 3.0，电机2触发速度 = -3.0
+ *       - 力矩绝对值 > 1.0：电机1触发速度 = 7.0，电机2触发速度 = -7.0
  */
 void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float ch7_max,
                              float roll_left, float roll_right, bool imu_left_valid, bool imu_right_valid) {
@@ -402,6 +405,20 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
     // 如果未激活，跳过速度跟随逻辑
     if (!_is_active) {
         return;
+    }
+
+    // 根据 phase1.torque 动态调整触发速度
+    // 力矩范围：电机1 [0.0 ~ 1.7]，电机2 [-1.7 ~ 0.0]
+    // 触发速度规则：
+    //   - 力矩绝对值 < 1.0：电机1 = 3.0，电机2 = -3.0
+    //   - 力矩绝对值 >= 1.0：电机1 = 7.0，电机2 = -7.0
+    float motor1_torque_abs = (_config_motor1.phase1.torque < 0) ? -_config_motor1.phase1.torque : _config_motor1.phase1.torque;
+    if (motor1_torque_abs >= 1.0f) {
+        _config_motor1.trigger_speed = 7.0f;
+        _config_motor2.trigger_speed = -7.0f;
+    } else {
+        _config_motor1.trigger_speed = 3.0f;
+        _config_motor2.trigger_speed = -3.0f;
     }
 
     switch (_state) {

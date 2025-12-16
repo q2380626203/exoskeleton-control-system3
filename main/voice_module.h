@@ -12,8 +12,8 @@ extern "C" {
 
 // UART配置
 #define VOICE_UART_NUM       UART_NUM_1
-#define VOICE_TX_PIN         1
-#define VOICE_RX_PIN         2
+#define VOICE_TX_PIN         2
+#define VOICE_RX_PIN         1
 #define VOICE_BAUDRATE       9600
 
 typedef struct {
