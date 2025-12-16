@@ -1,4 +1,5 @@
 #include <iostream>
+#include <math.h>   // For roundf
 #include <string.h> // For strtok
 #include <stdlib.h> // For atof, atoi
 #include <algorithm> // For std::min, resolves 'MIN' was not declared in this scope
@@ -15,8 +16,8 @@
 #include "wifi_webserver.h"
 #include "voice_module.h"
 #include "button_detector.h"
-#include "ai_inference.h" // AI推理模块
-#include "bt_imu.h" // 蓝牙IMU模块
+//#include "ai_inference.h" // AI推理模块
+//#include "bt_imu.h" // 蓝牙IMU模块
 
 static const char *TAG = "MAIN";
 
@@ -155,6 +156,11 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
     else if (strcmp(cmd, "mode_program") == 0) {
         ESP_LOGI(TAG, "[WEB] 接收到切换到程序模式命令");
         speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
+        return ESP_OK;
+    }
+    else if (strcmp(cmd, "mode_imu") == 0) {
+        ESP_LOGI(TAG, "[WEB] 接收到切换到IMU模式命令");
+        speed_follow.setModeType(SPEED_FOLLOW_MODE_IMU);
         return ESP_OK;
     }
 
@@ -336,7 +342,8 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
 
     // 获取当前模式和阶段
     speed_follow_mode_type_t mode_type = speed_follow.getModeType();
-    const char* mode_name = (mode_type == SPEED_FOLLOW_MODE_AI) ? "AI模式" : "程序模式";
+    const char* mode_name = (mode_type == SPEED_FOLLOW_MODE_AI) ? "AI模式" :
+                            (mode_type == SPEED_FOLLOW_MODE_IMU) ? "IMU模式" : "程序模式";
 
     int m1_phase = speed_follow.getCurrentM1Phase();
     int m2_phase = speed_follow.getCurrentM2Phase();
@@ -428,6 +435,26 @@ void motor_control_task(void *pvParameters) {
             current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
         }
 
+        // 获取蓝牙IMU数据（在循环开始处获取，供后续speed_follow.update()使用）
+        // bt_imu_data_t imu_data_left, imu_data_right;
+        // bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
+        // bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
+
+        // // 仅在数据有效时更新roll值，并保留2位小数以减少浮点精度误差
+        // if (imu_left_valid) {
+        //     roll_left = roundf(imu_data_left.roll * 100.0f) / 100.0f;
+        // }
+        // if (imu_right_valid) {
+        //     roll_right = roundf(imu_data_right.roll * 100.0f) / 100.0f;
+        // }
+
+        // // 更新IMU滑动窗口数据
+        // speed_follow.updateRollValue(roll_left, roll_right, imu_left_valid, imu_right_valid);
+
+        // 蓝牙IMU功能已禁用，使用默认值
+        bool imu_left_valid = false;
+        bool imu_right_valid = false;
+
         // 控制电机1 - FOC模式，通过MIT参数控制
         MotorCmdA1 control_cmd_1;
         control_cmd_1.id = current_motor_1.motor_id;
@@ -494,58 +521,45 @@ void motor_control_task(void *pvParameters) {
             //speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
 
             // ==================== AI推理部分 ====================
-            // 使用滑动窗口：将所有数据向前移动一位，保持时间顺序
-            for (int i = 0; i < AI_WINDOW_SIZE - 1; i++) {
-                m1_velocity_window[i] = m1_velocity_window[i + 1];
-                m2_velocity_window[i] = m2_velocity_window[i + 1];
-            }
-            // 最新数据放在窗口末尾
-            m1_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_1.vel;
-            m2_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_2.vel;
+            // // 使用滑动窗口：将所有数据向前移动一位，保持时间顺序
+            // for (int i = 0; i < AI_WINDOW_SIZE - 1; i++) {
+            //     m1_velocity_window[i] = m1_velocity_window[i + 1];
+            //     m2_velocity_window[i] = m2_velocity_window[i + 1];
+            // }
+            // // 最新数据放在窗口末尾
+            // m1_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_1.vel;
+            // m2_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_2.vel;
 
-            ai_window_index++;
+            // ai_window_index++;
 
-            // 当窗口填满50个点后，每次都运行AI推理
-            if (ai_window_index >= AI_WINDOW_SIZE) {
-                // 只有在AI模型就绪时才推理
-                if (ai_model_ready) {
-                    // 双腿联合推理 (仅速度)
-                    ai_inference_result_t result;
-                    if (ai_run_inference(m1_velocity_window, m2_velocity_window, &result)) {
-                        // 从单次推理结果中获取两腿的阶段预测
-                        m1_predicted_phase = result.m1_phase;
-                        m2_predicted_phase = result.m2_phase;
+            // // 当窗口填满50个点后，每次都运行AI推理
+            // if (ai_window_index >= AI_WINDOW_SIZE) {
+            //     // 只有在AI模型就绪时才推理
+            //     if (ai_model_ready) {
+            //         // 双腿联合推理 (仅速度)
+            //         ai_inference_result_t result;
+            //         if (ai_run_inference(m1_velocity_window, m2_velocity_window, &result)) {
+            //             // 从单次推理结果中获取两腿的阶段预测
+            //             m1_predicted_phase = result.m1_phase;
+            //             m2_predicted_phase = result.m2_phase;
 
-                        // 注入AI推理结果到速度跟随模块（用于AI模式判断）
-                        speed_follow.updateAIPhase(result.m1_phase, result.m2_phase);
-                    }
-                }
-            }
+            //             // 注入AI推理结果到速度跟随模块（用于AI模式判断）
+            //             speed_follow.updateAIPhase(result.m1_phase, result.m2_phase);
+            //         }
+            //     }
+            // }
 
-            // 使用AI推理结果作为标签输出
-            m1_ai_label = (float)m1_predicted_phase;  // m1的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
-            m2_ai_label = (float)m2_predicted_phase;  // m2的AI预测阶段 (0:静止, 1:抬腿, 2:压腿)
+            // 使用AI推理结果作为标签输出（AI功能已禁用，标签固定为0）
+            m1_ai_label = 0.0f;  // m1的AI预测阶段 (AI已禁用)
+            m2_ai_label = 0.0f;  // m2的AI预测阶段 (AI已禁用)
             // ==================== AI推理部分结束 ====================
 
             // 检查阈值并可能激活速度跟随模式
             speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
 
             // 使用 ch6_max 和 ch7_max 更新速度跟随模式
-            speed_follow.update(motor_data_1, ch6_max, ch7_max);
-            speed_follow.update(motor_data_2, ch6_max, ch7_max);
-        }
-
-        // 获取蓝牙IMU数据（不依赖电机通信状态）
-        bt_imu_data_t imu_data_left, imu_data_right;
-        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
-        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
-
-        // 仅在数据有效时更新roll值
-        if (imu_left_valid) {
-            roll_left = imu_data_left.roll;
-        }
-        if (imu_right_valid) {
-            roll_right = imu_data_right.roll;
+            speed_follow.update(motor_data_1, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
+            speed_follow.update(motor_data_2, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
         }
 
         // 打印数据（电机通信失败时，motor_data会使用上一次的值或初始值）
@@ -584,35 +598,35 @@ extern "C" void app_main() {
 
     // 初始化语音模块
     voice_module_init(&voice_module);
-    voice_speak(&voice_module, "系统启动成功");
+    //voice_speak(&voice_module, "系统启动成功");
 
     // ==================== 初始化AI模型 ====================
-    ESP_LOGI(TAG, "正在初始化AI推理模型...");
-    if (ai_model_init()) {
-        ai_model_ready = true;
-        ESP_LOGI(TAG, "✓ AI模型初始化成功");
+    // ESP_LOGI(TAG, "正在初始化AI推理模型...");
+    // if (ai_model_init()) {
+    //     ai_model_ready = true;
+    //     ESP_LOGI(TAG, "✓ AI模型初始化成功");
 
-        // 获取并打印模型信息
-        uint32_t model_size, arena_used;
-        ai_get_model_info(&model_size, &arena_used);
-        ESP_LOGI(TAG, "  模型大小: %lu bytes", model_size);
-        ESP_LOGI(TAG, "  内存使用: %lu bytes", arena_used);
+    //     // 获取并打印模型信息
+    //     uint32_t model_size, arena_used;
+    //     ai_get_model_info(&model_size, &arena_used);
+    //     ESP_LOGI(TAG, "  模型大小: %lu bytes", model_size);
+    //     ESP_LOGI(TAG, "  内存使用: %lu bytes", arena_used);
 
-        //voice_speak(&voice_module, "AI模型已就绪");
-    } else {
-        ai_model_ready = false;
-        ESP_LOGW(TAG, "⚠ AI模型初始化失败，将使用默认标签");
-        //voice_speak(&voice_module, "AI模型加载失败");
-    }
+    //     //voice_speak(&voice_module, "AI模型已就绪");
+    // } else {
+    //     ai_model_ready = false;
+    //     ESP_LOGW(TAG, "⚠ AI模型初始化失败，将使用默认标签");
+    //     //voice_speak(&voice_module, "AI模型加载失败");
+    // }
     // ==================== AI模型初始化结束 ====================
 
     // ==================== 初始化蓝牙IMU模块 ====================
-    ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");
-    if (bt_imu_init_multi() == 0) {
-        ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");
-    } else {
-        ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");
-    }
+    // ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");
+    // if (bt_imu_init_multi() == 0) {
+    //     ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");
+    // } else {
+    //     ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");
+    // }
     // ==================== 蓝牙IMU模块初始化结束 ====================
 
     // 为电机参数创建互斥锁

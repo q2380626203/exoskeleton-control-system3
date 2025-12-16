@@ -10,7 +10,8 @@
 // 阶段判断模式
 typedef enum {
     SPEED_FOLLOW_MODE_AI,        // AI模式
-    SPEED_FOLLOW_MODE_PROGRAM    // 程序硬编模式（默认）
+    SPEED_FOLLOW_MODE_PROGRAM,   // 程序硬编模式（默认）
+    SPEED_FOLLOW_MODE_IMU        // IMU模式（roll角度触发）
 } speed_follow_mode_type_t;
 
 // 速度跟随模式状态
@@ -64,10 +65,22 @@ typedef struct {
     } idle;
 } speed_follow_config_t;
 
+// IMU滑动窗口数据结构
+typedef struct {
+    float data[5];      // 滑动窗口数据
+    int count;          // 当前窗口中的有效数据数量
+    int head;           // 队列头部索引（最新数据插入位置）
+} imu_roll_window_t;
+
 class SpeedFollowMode {
 private:
     // 内部使用的私有函数
     void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
+
+    // IMU滑动窗口辅助函数
+    void initRollWindow(imu_roll_window_t& window);
+    void addRollValue(imu_roll_window_t& window, float value);
+    bool findRollDecrease(const imu_roll_window_t& window, float threshold);
 
 public:
     SpeedFollowMode();
@@ -91,7 +104,8 @@ public:
     void checkThresholdAndActivate(float ch6_max, float ch7_max); // 检查阈值并激活
 
     // 更新电机数据，检测触发条件，并修改全局参数
-    void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max);
+    void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max,
+                float roll_left, float roll_right, bool imu_left_valid, bool imu_right_valid);
 
     // 按键触发进入按键等待状态
     void startButtonWaiting();
@@ -153,6 +167,9 @@ public:
     // 获取当前判断的阶段（用于网页显示）
     int getCurrentM1Phase() const;
     int getCurrentM2Phase() const;
+
+    // IMU滑动窗口数据更新（从main.cpp调用）
+    void updateRollValue(float roll_left, float roll_right, bool left_valid, bool right_valid);
 
 private:
     speed_follow_state_t _state;
@@ -221,6 +238,14 @@ private:
 
     // AI模式静止检测
     uint32_t _both_static_start_time;     // 双腿都静止的开始时间（用于4秒超时检测）
+
+    // ===== IMU模式相关 =====
+    float _imu_roll_threshold;      // IMU roll值变化阈值（默认5.0度）
+
+    // IMU滑动窗口（5个数据点）
+    static const int IMU_WINDOW_SIZE = 5;
+    imu_roll_window_t _roll_left_window;
+    imu_roll_window_t _roll_right_window;
 };
 
 #endif // SPEED_FOLLOW_MODE_H

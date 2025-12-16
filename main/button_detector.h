@@ -15,9 +15,9 @@ extern "C" {
 // GPIO引脚定义
 // ============================================================================
 
-#define BUTTON_ASSIST_UP_PIN      GPIO_NUM_3   // 助力增加按键（自复位）
+#define BUTTON_ASSIST_UP_PIN      GPIO_NUM_5   // 助力增加按键（自复位）
 #define BUTTON_POWER_SWITCH_PIN   GPIO_NUM_4   // 助力开关（持续导通）
-#define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5   // 助力减少按键（自复位）
+#define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_3   // 助力减少按键（自复位）
 
 // ============================================================================
 // 防抖参数

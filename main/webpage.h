@@ -275,7 +275,8 @@ const char webpage_html[] = R"rawliteral(
         <!-- 控制按钮区 -->
         <div class="control-section">
             <h3 style="margin-bottom: 15px; color: #333;">模式控制</h3>
-            <div class="button-group">
+            <div class="button-group" style="grid-template-columns: repeat(3, 1fr);">
+                <button class="btn btn-primary" id="btn-imu-mode" onclick="sendCommand('mode_imu')">🔍 IMU模式</button>
                 <button class="btn btn-primary" id="btn-ai-mode" onclick="sendCommand('mode_ai')">🤖 AI模式</button>
                 <button class="btn btn-secondary" id="btn-program-mode" onclick="sendCommand('mode_program')">⚙️ 程序模式</button>
             </div>
@@ -523,16 +524,16 @@ const char webpage_html[] = R"rawliteral(
 
                     // 更新模式按钮激活状态
                     const isAIMode = (data.mode === "AI模式");
+                    const isIMUMode = (data.mode === "IMU模式");
+                    const isProgramMode = (data.mode === "程序模式");
+
                     const btnAI = document.getElementById('btn-ai-mode');
+                    const btnIMU = document.getElementById('btn-imu-mode');
                     const btnProgram = document.getElementById('btn-program-mode');
 
-                    if (isAIMode) {
-                        btnAI.classList.add('active');
-                        btnProgram.classList.remove('active');
-                    } else {
-                        btnAI.classList.remove('active');
-                        btnProgram.classList.add('active');
-                    }
+                    btnAI.classList.toggle('active', isAIMode);
+                    btnIMU.classList.toggle('active', isIMUMode);
+                    btnProgram.classList.toggle('active', isProgramMode);
 
                     // 更新状态文本和样式
                     const stateText = document.getElementById('state-text');

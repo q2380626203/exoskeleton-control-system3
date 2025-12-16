@@ -30,7 +30,11 @@ SpeedFollowMode::SpeedFollowMode()
       _motor2_vel(nullptr), _motor2_t(nullptr), _motor2_kp(nullptr), _motor2_kd(nullptr),
       _global_mutex(nullptr), _diff_buffers(nullptr),
       _mode_type(SPEED_FOLLOW_MODE_PROGRAM), _ai_m1_phase(0), _ai_m2_phase(0),
-      _current_m1_phase(0), _current_m2_phase(0), _both_static_start_time(0) {
+      _current_m1_phase(0), _current_m2_phase(0), _both_static_start_time(0),
+      _imu_roll_threshold(1.0f) {
+    // 初始化滑动窗口
+    initRollWindow(_roll_left_window);
+    initRollWindow(_roll_right_window);
 }
 
 // ============================================================================
@@ -76,6 +80,63 @@ void SpeedFollowMode::setMotorParams(uint8_t motor_id, uint8_t mode, float pos, 
             xSemaphoreGive(_global_mutex);
         }
     }
+}
+
+/**
+ * @brief 初始化IMU滑动窗口
+ * @param window 要初始化的窗口结构
+ */
+void SpeedFollowMode::initRollWindow(imu_roll_window_t& window) {
+    window.count = 0;
+    window.head = 0;
+    for (int i = 0; i < IMU_WINDOW_SIZE; i++) {
+        window.data[i] = 0.0f;
+    }
+}
+
+/**
+ * @brief 向IMU滑动窗口添加新的roll值
+ * @param window 滑动窗口结构
+ * @param value 新的roll值
+ */
+void SpeedFollowMode::addRollValue(imu_roll_window_t& window, float value) {
+    window.data[window.head] = value;
+    window.head = (window.head + 1) % IMU_WINDOW_SIZE;
+    if (window.count < IMU_WINDOW_SIZE) {
+        window.count++;
+    }
+}
+
+/**
+ * @brief 在滑动窗口中查找是否存在roll值减小超过阈值的情况
+ * @param window 滑动窗口结构
+ * @param threshold roll值减小的阈值
+ * @return true 如果找到减小超过阈值的情况，false 否则
+ *
+ * @note 检查窗口中相邻数据点之间的roll值减小（从旧到新）
+ * @note 例如：数据 22.3 21.5 21.4 21.3 21.1，会检测到 22.3->21.5 的减小（符合条件）
+ */
+bool SpeedFollowMode::findRollDecrease(const imu_roll_window_t& window, float threshold) {
+    if (window.count < 2) {
+        return false; // 数据不足，无法判断
+    }
+
+    // 遍历窗口中的相邻数据对，从旧到新
+    for (int i = 0; i < window.count - 1; i++) {
+        // 计算当前数据点和下一个数据点的实际索引（环形缓冲区）
+        int current_idx = (window.head - window.count + i + IMU_WINDOW_SIZE) % IMU_WINDOW_SIZE;
+        int next_idx = (window.head - window.count + i + 1 + IMU_WINDOW_SIZE) % IMU_WINDOW_SIZE;
+
+        // 计算相邻两点之间的roll值变化（旧值 - 新值）
+        float roll_delta = window.data[current_idx] - window.data[next_idx];
+
+        // 如果减小量超过阈值，返回true
+        if (roll_delta > threshold) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // ============================================================================
@@ -334,7 +395,8 @@ void SpeedFollowMode::checkThresholdAndActivate(float ch6_max, float ch7_max) {
  * @note 必须检查motor_data.id来判断当前处理的是哪个电机的数据
  * @note PHASE1/PHASE2使用实时速度*0.8动态更新电机参数
  */
-void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float ch7_max) {
+void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float ch7_max,
+                             float roll_left, float roll_right, bool imu_left_valid, bool imu_right_valid) {
     uint32_t current_time = esp_timer_get_time() / 1000; // 转换为毫秒
 
     // 如果未激活，跳过速度跟随逻辑
@@ -362,6 +424,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     } else if (motor_data.id == 2) {
                         motor2_triggered = (_ai_m2_phase == 1);  // 1 = 抬腿
                         _current_m2_phase = _ai_m2_phase;  // 更新当前阶段（包括静止0、抬腿1、压腿2）
+                    }
+                } else if (_mode_type == SPEED_FOLLOW_MODE_IMU) {
+                    // IMU模式：使用滑动窗口查找roll角度减小超过阈值的情况
+                    if (motor_data.id == 1) {
+                        motor1_triggered = findRollDecrease(_roll_left_window, _imu_roll_threshold);
+                        _current_m1_phase = motor1_triggered ? 1 : 0;
+                    } else if (motor_data.id == 2) {
+                        motor2_triggered = findRollDecrease(_roll_right_window, _imu_roll_threshold);
+                        _current_m2_phase = motor2_triggered ? 1 : 0;
                     }
                 } else {
                     // 程序模式：使用速度阈值判断
@@ -477,11 +548,11 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
 
         case SPEED_FOLLOW_MOTOR1_WORKING:
             // 1号电机工作状态：程序模式专用，检测速度触发
-            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
-                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
-
-            // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
             {
+                setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                              _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+
+                // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
                 uint32_t timeout_ms = _is_button_triggered ? 4000 : 1200;
 
                 // 检测超时
@@ -507,46 +578,56 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     }
                     break;
                 }
-            }
 
-            // 程序模式逻辑
-            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
-                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+                // 程序模式/IMU模式逻辑
+                setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                              _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
 
-            // 立即检测速度触发条件
-            if (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed) {
-                // 捕获速度值
-                _captured_velocity = motor_data.vel;
-                _state = SPEED_FOLLOW_PHASE1;
-                _lifting_motor = 1; // 1号电机抬腿
-                _phase_start_time = current_time;
-                _current_m1_phase = 1;
+                // 根据模式选择触发条件
+                bool motor1_should_trigger = false;
 
-                // 1号电机开始抬腿动作，使用捕获速度的0.8倍
-                float scaled_vel = _captured_velocity * _velocity_scale;
-                setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
-                              _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
-            } else {
-                _current_m1_phase = 0;
+                if (_mode_type == SPEED_FOLLOW_MODE_IMU) {
+                    // IMU模式：在滑动窗口中查找roll值减小超过阈值的情况
+                    motor1_should_trigger = findRollDecrease(_roll_left_window, _imu_roll_threshold);
+                } else {
+                    // 程序模式：检测速度阈值
+                    motor1_should_trigger = (motor_data.id == 1 && motor_data.vel > _config_motor1.trigger_speed);
+                }
+
+                if (motor1_should_trigger) {
+                    // 捕获速度值
+                    _captured_velocity = motor_data.vel;
+                    _state = SPEED_FOLLOW_PHASE1;
+                    _lifting_motor = 1; // 1号电机抬腿
+                    _phase_start_time = current_time;
+                    _current_m1_phase = 1;
+
+                    // 1号电机开始抬腿动作，使用捕获速度的0.8倍
+                    float scaled_vel = _captured_velocity * _velocity_scale;
+                    setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
+                                  _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
+                } else {
+                    _current_m1_phase = 0;
+                }
             }
             break;
 
         case SPEED_FOLLOW_MOTOR2_WORKING:
             // 2号电机工作状态：程序模式专用，检测速度触发
-            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
-                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
-
-            // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
             {
+                setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
+                              _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
+
+                // 按键模式下超时时间为4秒，ch6/ch7触发模式为1.2秒
                 uint32_t timeout_ms = _is_button_triggered ? 4000 : 1200;
 
                 // 检测超时
                 if (current_time - _working_start_time >= timeout_ms) {
                     if (_is_button_triggered) {
-                        ESP_LOGW(TAG, "⏱️ 2号电机工作超时4s未检测到速度触发，进入静止状态");
+                        // ESP_LOGW(TAG, "⏱️ 2号电机工作超时4s未检测到速度触发，进入静止状态");
                         _is_button_triggered = false; // 清除按键触发标志
                     } else {
-                        ESP_LOGW(TAG, "⏱️ 2号电机工作超时1.2s未检测到速度触发，进入静止状态");
+                        // ESP_LOGW(TAG, "⏱️ 2号电机工作超时1.2s未检测到速度触发，进入静止状态");
                     }
                     _is_stationary = true; // 设置静止标志（按键和缓存区触发都会触发语音）
                     _is_active = false;
@@ -563,27 +644,37 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     }
                     break;
                 }
-            }
 
-            // 程序模式逻辑
-            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
-                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+                // 程序模式/IMU模式逻辑
+                setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
+                              _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-            // 立即检测速度触发条件
-            if (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed) {
-                // 捕获速度值
-                _captured_velocity = motor_data.vel;
-                _state = SPEED_FOLLOW_PHASE1;
-                _lifting_motor = 2; // 2号电机抬腿
-                _phase_start_time = current_time;
-                _current_m2_phase = 1;
+                // 根据模式选择触发条件
+                bool motor2_should_trigger = false;
 
-                // 2号电机开始抬腿动作，使用捕获速度的0.8倍
-                float scaled_vel = _captured_velocity * _velocity_scale;
-                setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
-                              _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
-            } else {
-                _current_m2_phase = 0;
+                if (_mode_type == SPEED_FOLLOW_MODE_IMU) {
+                    // IMU模式：在滑动窗口中查找roll值减小超过阈值的情况
+                    motor2_should_trigger = findRollDecrease(_roll_right_window, _imu_roll_threshold);
+                } else {
+                    // 程序模式：检测速度阈值
+                    motor2_should_trigger = (motor_data.id == 2 && motor_data.vel < _config_motor2.trigger_speed);
+                }
+
+                if (motor2_should_trigger) {
+                    // 捕获速度值
+                    _captured_velocity = motor_data.vel;
+                    _state = SPEED_FOLLOW_PHASE1;
+                    _lifting_motor = 2; // 2号电机抬腿
+                    _phase_start_time = current_time;
+                    _current_m2_phase = 1;
+
+                    // 2号电机开始抬腿动作，使用捕获速度的0.8倍
+                    float scaled_vel = _captured_velocity * _velocity_scale;
+                    setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
+                                  _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
+                } else {
+                    _current_m2_phase = 0;
+                }
             }
             break;
 
@@ -595,21 +686,21 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 // 检查超时
                 if (current_time - _phase_start_time >= _phase1_timeout_ms) {
                     should_transition = true;
-                    ESP_LOGI(TAG, "⏱️ PHASE1超时(%dms)，强制进入PHASE2", _phase1_timeout_ms);
+                    // ESP_LOGI(TAG, "⏱️ PHASE1超时(%dms)，强制进入PHASE2", _phase1_timeout_ms);
                 }
                 // 检查速度反转（提前触发）
                 else if (_lifting_motor == 1 && motor_data.id == 1) {
                     // 电机1：从+v变为-v
                     if (_captured_velocity > 0 && motor_data.vel < 0) {
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机1速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
+                        // ESP_LOGI(TAG, "🔄 电机1速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
                     _current_m1_phase = (motor_data.vel > _config_motor1.trigger_speed) ? 1 : 0;
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
                     // 电机2：从-v变为+v
                     if (_captured_velocity < 0 && motor_data.vel > 0) {
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机2速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
+                        // ESP_LOGI(TAG, "🔄 电机2速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
                     _current_m2_phase = (motor_data.vel < _config_motor2.trigger_speed) ? 1 : 0;
                 }
@@ -662,7 +753,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 // 检查超时
                 if (current_time - _phase_start_time >= _phase2_timeout_ms) {
                     should_transition = true;
-                    ESP_LOGI(TAG, "⏱️ PHASE2超时(%dms)，强制进入IDLE", _phase2_timeout_ms);
+                    // ESP_LOGI(TAG, "⏱️ PHASE2超时(%dms)，强制进入IDLE", _phase2_timeout_ms);
                 }
                 // 检查速度峰值（压腿完成）
                 else if (_lifting_motor == 1 && motor_data.id == 1) {
@@ -673,8 +764,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     if (_phase2_peak_velocity > _phase2_vel_threshold && abs_vel < _phase2_peak_velocity) {
                         // 速度开始下降，说明已达到峰值
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机1速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
-                                _phase2_peak_velocity, abs_vel);
+                        // ESP_LOGI(TAG, "🔄 电机1速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
+                        //         _phase2_peak_velocity, abs_vel);
                     } else if (abs_vel > _phase2_peak_velocity) {
                         // 更新峰值速度
                         _phase2_peak_velocity = abs_vel;
@@ -690,8 +781,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     if (_phase2_peak_velocity > _phase2_vel_threshold && abs_vel < _phase2_peak_velocity) {
                         // 速度开始下降，说明已达到峰值
                         should_transition = true;
-                        ESP_LOGI(TAG, "🔄 电机2速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
-                                _phase2_peak_velocity, abs_vel);
+                        // ESP_LOGI(TAG, "🔄 电机2速度达到峰值(%.3f)开始下降(%.3f)，完成压腿",
+                        //         _phase2_peak_velocity, abs_vel);
                     } else if (abs_vel > _phase2_peak_velocity) {
                         // 更新峰值速度
                         _phase2_peak_velocity = abs_vel;
@@ -815,7 +906,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 }
                 _phase_start_time = current_time;
                 _working_start_time = current_time; // 记录工作状态开始时间
-                ESP_LOGI(TAG, "🔄 空闲完成，%d号电机开始工作检测", _active_motor);
+                // ESP_LOGI(TAG, "🔄 空闲完成，%d号电机开始工作检测", _active_motor);
             }
 
             // 保持空闲状态
@@ -913,8 +1004,15 @@ void SpeedFollowMode::setModeType(speed_follow_mode_type_t mode) {
     // 仅在IDLE状态允许切换
     if (_state == SPEED_FOLLOW_IDLE) {
         _mode_type = mode;
-        const char* mode_name = (mode == SPEED_FOLLOW_MODE_AI) ? "AI模式" : "程序模式";
+        const char* mode_name = (mode == SPEED_FOLLOW_MODE_AI) ? "AI模式" :
+                                (mode == SPEED_FOLLOW_MODE_IMU) ? "IMU模式" : "程序模式";
         ESP_LOGI(TAG, "[模式切换] 切换到%s", mode_name);
+
+        // 切换到IMU模式时清空滑动窗口
+        if (mode == SPEED_FOLLOW_MODE_IMU) {
+            initRollWindow(_roll_left_window);
+            initRollWindow(_roll_right_window);
+        }
     } else {
         ESP_LOGW(TAG, "[模式切换] 当前状态非IDLE，无法切换模式");
     }
@@ -944,4 +1042,22 @@ int SpeedFollowMode::getCurrentM1Phase() const {
  */
 int SpeedFollowMode::getCurrentM2Phase() const {
     return _current_m2_phase;
+}
+
+/**
+ * @brief 更新IMU滑动窗口的roll值
+ * @param roll_left 左腿的roll值
+ * @param roll_right 右腿的roll值
+ * @param left_valid 左腿数据是否有效
+ * @param right_valid 右腿数据是否有效
+ *
+ * @note 从main.cpp中IMU数据处理后调用
+ */
+void SpeedFollowMode::updateRollValue(float roll_left, float roll_right, bool left_valid, bool right_valid) {
+    if (left_valid) {
+        addRollValue(_roll_left_window, roll_left);
+    }
+    if (right_valid) {
+        addRollValue(_roll_right_window, roll_right);
+    }
 }
