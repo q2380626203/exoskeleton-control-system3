@@ -429,6 +429,10 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
+            // 按键等待状态下，两个电机都处于检测状态
+            _current_m1_phase = 3;  // 检测速度触发中
+            _current_m2_phase = 3;  // 检测速度触发中
+
             {
                 bool motor1_triggered = false;
                 bool motor2_triggered = false;
@@ -511,6 +515,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                           _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
+            // 根据触发通道设置标签：ch6触发检测M2，ch7触发检测M1
+            if (_triggered_channel == 6) {
+                _current_m1_phase = 0;  // M1空闲
+                _current_m2_phase = 3;  // M2检测速度触发中
+            } else {
+                _current_m1_phase = 3;  // M1检测速度触发中
+                _current_m2_phase = 0;  // M2空闲
+            }
+
             {
                 // 根据触发通道选择对应电机的等待时间配置
                 uint32_t waiting_duration = (_triggered_channel == 6) ? _config_motor2.waiting_duration_ms : _config_motor1.waiting_duration_ms;
@@ -586,6 +599,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _first_trigger_detected = false;
                     _triggered_channel = 0;
                     _working_start_time = 0;
+                    _current_m1_phase = 0;  // 超时退出，设置为空闲
+                    _current_m2_phase = 0;  // 超时退出，设置为空闲
                     // 清空所有缓存区
                     if (_diff_buffers) {
                         diff_buffer_clear_all(_diff_buffers);
@@ -617,14 +632,16 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_PHASE1;
                     _lifting_motor = 1; // 1号电机抬腿
                     _phase_start_time = current_time;
-                    _current_m1_phase = 1;
+                    _current_m1_phase = 1;  // 进入抬腿阶段
+                    _current_m2_phase = 0;  // M2空闲
 
                     // 1号电机开始抬腿动作，使用捕获速度的0.8倍
                     float scaled_vel = _captured_velocity * _velocity_scale;
                     setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
                                   _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
                 } else {
-                    _current_m1_phase = 0;
+                    _current_m1_phase = 3;  // 检测速度触发中
+                    _current_m2_phase = 0;  // M2空闲
                 }
             }
             break;
@@ -652,6 +669,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _first_trigger_detected = false;
                     _triggered_channel = 0;
                     _working_start_time = 0;
+                    _current_m1_phase = 0;  // 超时退出，设置为空闲
+                    _current_m2_phase = 0;  // 超时退出，设置为空闲
                     // 清空所有缓存区
                     if (_diff_buffers) {
                         diff_buffer_clear_all(_diff_buffers);
@@ -683,14 +702,16 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_PHASE1;
                     _lifting_motor = 2; // 2号电机抬腿
                     _phase_start_time = current_time;
-                    _current_m2_phase = 1;
+                    _current_m1_phase = 0;  // M1空闲
+                    _current_m2_phase = 1;  // 进入抬腿阶段
 
                     // 2号电机开始抬腿动作，使用捕获速度的0.8倍
                     float scaled_vel = _captured_velocity * _velocity_scale;
                     setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
                                   _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
                 } else {
-                    _current_m2_phase = 0;
+                    _current_m1_phase = 0;  // M1空闲
+                    _current_m2_phase = 3;  // 检测速度触发中
                 }
             }
             break;
@@ -699,6 +720,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             // 抬腿阶段 - 程序模式专用：超时+速度反转检测
             {
                 bool should_transition = false;
+
+                // 根据抬腿电机设置标签：抬腿的电机为1，另一个为0
+                if (_lifting_motor == 1) {
+                    _current_m1_phase = 1;  // M1抬腿中
+                    _current_m2_phase = 0;  // M2空闲
+                } else {
+                    _current_m1_phase = 0;  // M1空闲
+                    _current_m2_phase = 1;  // M2抬腿中
+                }
 
                 // 检查超时
                 if (current_time - _phase_start_time >= _phase1_timeout_ms) {
@@ -712,14 +742,12 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         should_transition = true;
                         // ESP_LOGI(TAG, "🔄 电机1速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
-                    _current_m1_phase = (motor_data.vel > _config_motor1.trigger_speed) ? 1 : 0;
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
                     // 电机2：从-v变为+v
                     if (_captured_velocity < 0 && motor_data.vel > 0) {
                         should_transition = true;
                         // ESP_LOGI(TAG, "🔄 电机2速度反转(%.3f→%.3f)，提前进入PHASE2", _captured_velocity, motor_data.vel);
                     }
-                    _current_m2_phase = (motor_data.vel < _config_motor2.trigger_speed) ? 1 : 0;
                 }
 
                 if (should_transition) {
@@ -727,6 +755,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _active_motor = (_lifting_motor == 1) ? 2 : 1; // 切换工作电机
                     _state = SPEED_FOLLOW_PHASE2;
                     _phase_start_time = current_time;
+
+                    // 进入PHASE2时设置压腿标签
+                    if (_lifting_motor == 1) {
+                        _current_m1_phase = 2;  // M1压腿中
+                        _current_m2_phase = 0;  // M2空闲
+                    } else {
+                        _current_m1_phase = 0;  // M1空闲
+                        _current_m2_phase = 2;  // M2压腿中
+                    }
 
                     // 重置PHASE2峰值检测参数
                     _phase2_peak_velocity = 0.0f;
@@ -767,6 +804,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
             {
                 bool should_transition = false;
 
+                // 根据压腿电机设置标签：压腿的电机为2，另一个为0
+                if (_lifting_motor == 1) {
+                    _current_m1_phase = 2;  // M1压腿中
+                    _current_m2_phase = 0;  // M2空闲
+                } else {
+                    _current_m1_phase = 0;  // M1空闲
+                    _current_m2_phase = 2;  // M2压腿中
+                }
+
                 // 检查超时
                 if (current_time - _phase_start_time >= _phase2_timeout_ms) {
                     should_transition = true;
@@ -788,8 +834,6 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         _phase2_peak_velocity = abs_vel;
                         _phase2_peak_time = current_time;
                     }
-
-                    _current_m1_phase = 2;  // 压腿中
                 } else if (_lifting_motor == 2 && motor_data.id == 2) {
                     // 电机2：压腿时速度为正值（向下），取绝对值
                     float abs_vel = (motor_data.vel > 0) ? motor_data.vel : -motor_data.vel;
@@ -805,8 +849,6 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         _phase2_peak_velocity = abs_vel;
                         _phase2_peak_time = current_time;
                     }
-
-                    _current_m2_phase = 2;  // 压腿中
                 }
 
                 if (should_transition) {
@@ -814,6 +856,8 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_IDLE;
                     _lifting_motor = 0;
                     _phase_start_time = current_time;
+                    _current_m1_phase = 0;  // 压腿完成，两个都设为空闲
+                    _current_m2_phase = 0;
 
                     // 设置空闲状态
                     setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,

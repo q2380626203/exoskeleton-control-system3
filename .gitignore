@@ -63,3 +63,7 @@ cmake-build-*/
 
 # pyenv
 .python-version
+
+# Data files (TCP server output)
+tools/data/
+data/

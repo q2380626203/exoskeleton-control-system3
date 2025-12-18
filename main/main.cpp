@@ -16,6 +16,7 @@
 #include "wifi_webserver.h"
 #include "voice_module.h"
 #include "button_detector.h"
+#include "tcp_data_upload.h" // TCP数据上传模块
 //#include "ai_inference.h" // AI推理模块
 //#include "bt_imu.h" // 蓝牙IMU模块
 
@@ -366,7 +367,7 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
 }
 
 /**
- * @brief 电机控制任务，以500Hz频率执行双电机同步控制
+ * @brief 电机控制任务，以计算实际频率执行双电机同步控制
  * @param pvParameters FreeRTOS任务参数（未使用）
  * @details 执行流程：
  *          1. 读取全局电机参数（互斥锁保护）
@@ -472,7 +473,7 @@ void motor_control_task(void *pvParameters) {
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));
+         vTaskDelay(pdMS_TO_TICKS(1));
         // 控制电机2 - FOC模式，通过MIT参数控制
         MotorCmdA1 control_cmd_2;
         control_cmd_2.id = current_motor_2.motor_id;
@@ -512,13 +513,6 @@ void motor_control_task(void *pvParameters) {
             // 获取ch6和ch7缓存区的最大值
             ch6_max = diff_buffer_get_ch6_max(&position_buffers);
             ch7_max = diff_buffer_get_ch7_max(&position_buffers);
-
-            // 获取ch6和ch7经过滑动窗口平均滤波后的瞬时值
-            //float ch6_filtered = diff_buffer_get_ch6_filtered(&position_buffers, 100);
-            //float ch7_filtered = diff_buffer_get_ch7_filtered(&position_buffers, 100);
-
-            // 更新速度跟随模式的周期高频RMS计算
-            //speed_follow.updateCycleRMS(ch6_filtered, ch7_filtered);
 
             // ==================== AI推理部分 ====================
             // // 使用滑动窗口：将所有数据向前移动一位，保持时间顺序
@@ -562,22 +556,45 @@ void motor_control_task(void *pvParameters) {
             speed_follow.update(motor_data_2, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
         }
 
-        // 打印数据（电机通信失败时，motor_data会使用上一次的值或初始值）
-        printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-               motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
-               motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
-               ch6_max, ch7_max, m1_ai_label, m2_ai_label,
-               roll_left, roll_right);
+        // // 打印数据（电机通信失败时，motor_data会使用上一次的值或初始值）
+        // printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+        //        motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
+        //        motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
+        //        ch6_max, ch7_max, m1_ai_label, m2_ai_label,
+        //        roll_left, roll_right);
+
+        // 计算实际采样率（每500次计算一次）
+        static int64_t hz_start_time = 0;
+        static int hz_count = 0;
+        if (hz_count == 0) {
+            hz_start_time = esp_timer_get_time();
+        }
+        hz_count++;
+        if (hz_count >= 500) {
+            int64_t elapsed_us = esp_timer_get_time() - hz_start_time;
+            float actual_hz = 500.0f * 1000000.0f / (float)elapsed_us;
+            printf("实际采样率: %.1f Hz (500次耗时 %.1f ms)\n", actual_hz, elapsed_us / 1000.0f);
+            hz_count = 0;
+        }
+
+        // TCP数据上传 - 添加数据到发送缓冲区
+        motor_data_record_t record = {
+            .timestamp_ms = (int64_t)get_beijing_timestamp_ms(),
+            .motor1_pos = motor_data_1.pos,
+            .motor1_vel = motor_data_1.vel,
+            .motor1_torque = motor_data_1.t,
+            .motor2_pos = motor_data_2.pos,
+            .motor2_vel = motor_data_2.vel,
+            .motor2_torque = motor_data_2.t,
+            .m1_state_label = (int8_t)speed_follow.getCurrentM1Phase(),
+            .m2_state_label = (int8_t)speed_follow.getCurrentM2Phase()
+        };
+        tcp_data_add_record(&record);
 
         loop_count++;
 
-        // 关闭详细状态打印，只保留格式化的电机数据输出
-        // 数据按 "motors:ch0,ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8,ch9,ch10,ch11" 格式输出
-        // ch0-ch2: 电机1的位置,速度,力矩; ch3-ch5: 电机2的位置,速度,力矩
-        // ch6-ch7: ch6_max, ch7_max; ch8-ch9: AI标签; ch10-ch11: IMU左右roll角度
-
-        // 高频率控制: 2ms延时 = 500Hz控制频率
-        vTaskDelay(pdMS_TO_TICKS(2));
+        // 实际运行控制: 1+4+4实际运行任务  效果最好 
+         vTaskDelay(pdMS_TO_TICKS(3));
     }
 }
 
@@ -636,28 +653,33 @@ extern "C" void app_main() {
         return;
     }
 
-    // 初始化WiFi热点
-    ESP_LOGI(TAG, "正在初始化WiFi热点...");
-    if (wifi_init_softap() != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi热点初始化失败！");
-        return;
-    }
+    // 在后台任务中初始化WiFi和TCP数据上传，不阻塞主程序
+    // 电机控制任务立即创建，不受WiFi连接状态影响
+    wifi_tcp_init_background();
 
-    // 启动Web服务器
-    ESP_LOGI(TAG, "正在启动Web服务器...");
-    web_server = start_webserver();
-    if (web_server == NULL) {
-        ESP_LOGE(TAG, "Web服务器启动失败！");
-        return;
-    }
+    // 注释掉原来的AP模式和Web服务器
+    // // 初始化WiFi热点
+    // ESP_LOGI(TAG, "正在初始化WiFi热点...");
+    // if (wifi_init_softap() != ESP_OK) {
+    //     ESP_LOGE(TAG, "WiFi热点初始化失败！");
+    //     return;
+    // }
 
-    // 注册Web服务器回调函数
-    register_command_handler(handle_web_command);
-    register_param_handler(handle_web_param);
-    register_motor_param_handler(handle_web_motor_param);
-    register_motor_param_getter(handle_web_get_motor_param);
-    register_state_getter(handle_web_get_state);
-    ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
+    // // 启动Web服务器
+    // ESP_LOGI(TAG, "正在启动Web服务器...");
+    // web_server = start_webserver();
+    // if (web_server == NULL) {
+    //     ESP_LOGE(TAG, "Web服务器启动失败！");
+    //     return;
+    // }
+
+    // // 注册Web服务器回调函数
+    // register_command_handler(handle_web_command);
+    // register_param_handler(handle_web_param);
+    // register_motor_param_handler(handle_web_motor_param);
+    // register_motor_param_getter(handle_web_get_motor_param);
+    // register_state_getter(handle_web_get_state);
+    // ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
 
     // 配置MAX485 DE/RE引脚为输出并拉高，进入自动流控模式
     gpio_config_t io_conf = {};

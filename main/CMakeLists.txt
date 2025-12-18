@@ -1,4 +1,4 @@
-idf_component_register(SRCS "voice_module.c" "button_detector.cpp" "main.cpp" "unitree_motor.cpp" "crc_utils.cpp" "speed_follow_mode.cpp" "position_buffer.c" "wifi_webserver.c"
+idf_component_register(SRCS "tcp_data_upload.c" "voice_module.c" "button_detector.cpp" "main.cpp" "unitree_motor.cpp" "crc_utils.cpp" "speed_follow_mode.cpp" "position_buffer.c" "wifi_webserver.c"
                     INCLUDE_DIRS "."
                     # 嵌入AI模型文件（二进制格式，节省Flash空间）
                     # EMBED_FILES "model/motion_ai_model_quant.tflite"
