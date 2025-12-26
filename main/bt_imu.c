@@ -129,8 +129,8 @@ static void process_imu_data(bt_imu_handle_t* handle, const uint8_t *data) {
     if ((checksum & 0xff) != data[10]) {
         // 校验失败，尝试在缓冲区中重新寻找0x55同步头
         handle->checksum_errors++;
-        ESP_LOGD(TAG, "校验和错误: 计算=%02x 实际=%02x [总计:%lu]",
-                 checksum & 0xff, data[10], handle->checksum_errors);
+        // ESP_LOGD(TAG, "校验和错误: 计算=%02x 实际=%02x [总计:%lu]",
+        //          checksum & 0xff, data[10], handle->checksum_errors);  // 运行时日志已禁用
 
         // 在缓冲区中查找下一个可能的0x55起始位置
         for (int i = 1; i < 11; i++) {
@@ -140,8 +140,8 @@ static void process_imu_data(bt_imu_handle_t* handle, const uint8_t *data) {
                 memmove((void*)handle->temp_bytes, &data[i], remaining);
                 handle->temp_bytes_len = remaining;
                 handle->sync_resets++;
-                ESP_LOGD(TAG, "重新同步: 偏移=%d 剩余=%d [总计:%lu]",
-                         i, remaining, handle->sync_resets);
+                // ESP_LOGD(TAG, "重新同步: 偏移=%d 剩余=%d [总计:%lu]",
+                //          i, remaining, handle->sync_resets);  // 运行时日志已禁用
                 return;
             }
         }
@@ -222,7 +222,7 @@ static void process_imu_data(bt_imu_handle_t* handle, const uint8_t *data) {
         }
 
         default:
-            ESP_LOGD(TAG, "未知数据类型: 0x%02x", data[1]);
+            // ESP_LOGD(TAG, "未知数据类型: 0x%02x", data[1]);  // 运行时日志已禁用
             return; // 未知数据类型
     }
 
@@ -251,19 +251,28 @@ static int on_data_received(uint16_t conn_handle,
     // 查找对应的设备句柄
     bt_imu_handle_t* handle = find_handle_by_conn(conn_handle);
     if (!handle) {
-        ESP_LOGW(TAG, "未找到连接句柄: %d", conn_handle);
+        // 设备可能已断开，静默忽略
+        return 0;
+    }
+
+    // 检查 mbuf 是否有效
+    if (attr->om == NULL || attr->om->om_len == 0) {
         return 0;
     }
 
     // 将数据复制到临时缓存
     uint8_t data[attr->om->om_len];
-    ble_hs_mbuf_to_flat(attr->om, data, attr->om->om_len, NULL);
+    int rc = ble_hs_mbuf_to_flat(attr->om, data, attr->om->om_len, NULL);
+    if (rc != 0) {
+        // mbuf 复制失败，可能是内存问题，静默忽略
+        return 0;
+    }
 
     // 逐字节处理数据包
     for (int i = 0; i < attr->om->om_len; i++) {
         // 防止缓冲区溢出
         if (handle->temp_bytes_len >= 11) {
-            ESP_LOGW(TAG, "设备#%d缓冲区溢出，重置", handle->device_index + 1);
+            // ESP_LOGW(TAG, "设备#%d缓冲区溢出，重置", handle->device_index + 1);  // 运行时日志已禁用
             handle->temp_bytes_len = 0;
         }
 
@@ -297,37 +306,37 @@ static void on_service_discovery_complete(const struct peer *peer, int status, v
     bt_imu_handle_t* handle = find_handle_by_conn(conn_handle);
 
     if (!handle || status != 0) {
-        ESP_LOGE(TAG, "服务发现失败: %d", status);
+        // ESP_LOGE(TAG, "服务发现失败: %d", status);  // 运行时日志已禁用
         if (handle) {
             ble_gap_terminate(handle->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
         return;
     }
 
-    ESP_LOGI(TAG, "设备#%d服务发现完成", handle->device_index + 1);
+    // ESP_LOGI(TAG, "设备#%d服务发现完成", handle->device_index + 1);  // 运行时日志已禁用
 
     // 查找IMU服务
     svc = peer_svc_find_uuid(peer, &imu_service_uuid.u);
     if (svc == NULL) {
-        ESP_LOGE(TAG, "设备#%d未找到IMU服务", handle->device_index + 1);
+        // ESP_LOGE(TAG, "设备#%d未找到IMU服务", handle->device_index + 1);  // 运行时日志已禁用
         ble_gap_terminate(handle->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         return;
     }
 
-    ESP_LOGI(TAG, "设备#%d找到IMU服务", handle->device_index + 1);
+    // ESP_LOGI(TAG, "设备#%d找到IMU服务", handle->device_index + 1);  // 运行时日志已禁用
 
     // 查找写特征值
     chr = peer_chr_find_uuid(peer, &imu_service_uuid.u, &imu_write_char_uuid.u);
     if (chr != NULL) {
         handle->write_char_handle = chr->chr.val_handle;
-        ESP_LOGI(TAG, "设备#%d找到写特征值，句柄: %d", handle->device_index + 1, handle->write_char_handle);
+        // ESP_LOGI(TAG, "设备#%d找到写特征值，句柄: %d", handle->device_index + 1, handle->write_char_handle);  // 运行时日志已禁用
     }
 
     // 查找读特征值（通知）
     chr = peer_chr_find_uuid(peer, &imu_service_uuid.u, &imu_read_char_uuid.u);
     if (chr != NULL) {
         handle->read_char_handle = chr->chr.val_handle;
-        ESP_LOGI(TAG, "设备#%d找到读特征值，句柄: %d", handle->device_index + 1, handle->read_char_handle);
+        // ESP_LOGI(TAG, "设备#%d找到读特征值，句柄: %d", handle->device_index + 1, handle->read_char_handle);  // 运行时日志已禁用
 
         // 启用通知
         const struct peer_dsc *dsc;
@@ -343,14 +352,14 @@ static void on_service_discovery_complete(const struct peer *peer, int status, v
         }
 
         if (rc != 0) {
-            ESP_LOGE(TAG, "设备#%d启用通知失败: %d", handle->device_index + 1, rc);
+            // ESP_LOGE(TAG, "设备#%d启用通知失败: %d", handle->device_index + 1, rc);  // 运行时日志已禁用
         } else {
-            ESP_LOGI(TAG, "设备#%d通知已启用，等待数据...", handle->device_index + 1);
+            // ESP_LOGI(TAG, "设备#%d通知已启用，等待数据...", handle->device_index + 1);  // 运行时日志已禁用
         }
     }
 
     if (handle->read_char_handle == 0) {
-        ESP_LOGE(TAG, "设备#%d IMU特征值配置失败", handle->device_index + 1);
+        // ESP_LOGE(TAG, "设备#%d IMU特征值配置失败", handle->device_index + 1);  // 运行时日志已禁用
         ble_gap_terminate(handle->conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         return;
     }
@@ -365,10 +374,10 @@ static void on_service_discovery_complete(const struct peer *peer, int status, v
     }
 
     if (has_unconnected) {
-        ESP_LOGI(TAG, "设备#%d配置完成，标记需要继续扫描", handle->device_index + 1);
+        // ESP_LOGI(TAG, "设备#%d配置完成，标记需要继续扫描", handle->device_index + 1);  // 运行时日志已禁用
         g_need_rescan = true;
     } else {
-        ESP_LOGI(TAG, "所有设备已连接并配置完成");
+        // ESP_LOGI(TAG, "所有设备已连接并配置完成");  // 运行时日志已禁用
     }
 }
 
@@ -391,6 +400,7 @@ static int find_target_device_index(const ble_addr_t *addr) {
 static bt_imu_handle_t* find_handle_by_conn(uint16_t conn_handle) {
     for (int i = 0; i < MAX_IMU_DEVICES; i++) {
         if (g_bt_imu_handles[i] &&
+            g_bt_imu_handles[i]->is_connected &&  // 只查找已连接的设备
             g_bt_imu_handles[i]->conn_handle == conn_handle) {
             return g_bt_imu_handles[i];
         }
@@ -418,12 +428,12 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
     {
         int device_index = find_target_device_index(&event->disc.addr);
         if (device_index >= 0 && !is_device_connected(device_index)) {
-            ESP_LOGI(TAG, "发现目标IMU设备#%d: %s", device_index + 1, format_addr_str(event->disc.addr.val));
-            ESP_LOGI(TAG, "信号强度: %d dBm", event->disc.rssi);
+            // ESP_LOGI(TAG, "发现目标IMU设备#%d: %s", device_index + 1, format_addr_str(event->disc.addr.val));  // 运行时日志已禁用
+            // ESP_LOGI(TAG, "信号强度: %d dBm", event->disc.rssi);  // 运行时日志已禁用
 
             // 检查是否已经有连接操作正在进行
             if (g_connecting_in_progress) {
-                ESP_LOGI(TAG, "设备#%d已发现，等待当前连接完成后再连接", device_index + 1);
+                // ESP_LOGI(TAG, "设备#%d已发现，等待当前连接完成后再连接", device_index + 1);  // 运行时日志已禁用
                 return 0;
             }
 
@@ -431,7 +441,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             uint8_t own_addr_type;
             rc = ble_hs_id_infer_auto(0, &own_addr_type);
             if (rc != 0) {
-                ESP_LOGE(TAG, "地址类型推断失败: %d", rc);
+                // ESP_LOGE(TAG, "地址类型推断失败: %d", rc);  // 运行时日志已禁用
                 return 0;
             }
 
@@ -439,7 +449,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             if (g_bt_imu_handles[device_index] == NULL) {
                 g_bt_imu_handles[device_index] = (bt_imu_handle_t*)malloc(sizeof(bt_imu_handle_t));
                 if (!g_bt_imu_handles[device_index]) {
-                    ESP_LOGE(TAG, "设备#%d内存分配失败", device_index + 1);
+                    // ESP_LOGE(TAG, "设备#%d内存分配失败", device_index + 1);  // 运行时日志已禁用
                     return 0;
                 }
                 memset(g_bt_imu_handles[device_index], 0, sizeof(bt_imu_handle_t));
@@ -447,7 +457,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
                 // 创建互斥锁
                 g_bt_imu_handles[device_index]->data_mutex = xSemaphoreCreateMutex();
                 if (!g_bt_imu_handles[device_index]->data_mutex) {
-                    ESP_LOGE(TAG, "设备#%d互斥锁创建失败", device_index + 1);
+                    // ESP_LOGE(TAG, "设备#%d互斥锁创建失败", device_index + 1);  // 运行时日志已禁用
                     free(g_bt_imu_handles[device_index]);
                     g_bt_imu_handles[device_index] = NULL;
                     return 0;
@@ -460,14 +470,14 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             memcpy(g_bt_imu_handles[device_index]->device_addr, event->disc.addr.val, 6);
             g_bt_imu_handles[device_index]->device_index = device_index;
 
-            ESP_LOGI(TAG, "正在连接IMU设备#%d...", device_index + 1);
+            // ESP_LOGI(TAG, "正在连接IMU设备#%d...", device_index + 1);  // 运行时日志已禁用
 
             // 先取消扫描，连接完成后会自动重新扫描未连接的设备
             ble_gap_disc_cancel();
 
             rc = ble_gap_connect(own_addr_type, &event->disc.addr, 30000, NULL, ble_gap_event, NULL);
             if (rc != 0) {
-                ESP_LOGE(TAG, "设备#%d连接失败: %d", device_index + 1, rc);
+                // ESP_LOGE(TAG, "设备#%d连接失败: %d", device_index + 1, rc);  // 运行时日志已禁用
                 g_connecting_in_progress = false;
                 // 标记需要重新扫描
                 g_need_rescan = true;
@@ -487,7 +497,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         // 通过地址找到对应的设备索引
         rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
         if (rc != 0) {
-            ESP_LOGE(TAG, "获取连接信息失败: %d", rc);
+            // ESP_LOGE(TAG, "获取连接信息失败: %d", rc);  // 运行时日志已禁用
             // 标记需要重新扫描
             g_need_rescan = true;
             return 0;
@@ -495,7 +505,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
 
         int device_index = find_target_device_index(&desc.peer_id_addr);
         if (device_index < 0 || !g_bt_imu_handles[device_index]) {
-            ESP_LOGE(TAG, "未知设备连接");
+            // ESP_LOGE(TAG, "未知设备连接");  // 运行时日志已禁用
             // 标记需要重新扫描
             g_need_rescan = true;
             return 0;
@@ -504,21 +514,21 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         bt_imu_handle_t* handle = g_bt_imu_handles[device_index];
 
         if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "IMU设备#%d连接成功！地址: %s",
-                     device_index + 1,
-                     format_addr_str(handle->device_addr));
+            // ESP_LOGI(TAG, "IMU设备#%d连接成功！地址: %s",
+            //          device_index + 1,
+            //          format_addr_str(handle->device_addr));  // 运行时日志已禁用
 
             handle->is_connected = true;
             handle->conn_handle = event->connect.conn_handle;
             g_connected_count++;
 
-            ESP_LOGI(TAG, "连接句柄: %d (已连接%d/%d个设备)",
-                     handle->conn_handle, g_connected_count, MAX_IMU_DEVICES);
-            ESP_LOGI(TAG, "开始服务发现...");
+            // ESP_LOGI(TAG, "连接句柄: %d (已连接%d/%d个设备)",
+            //          handle->conn_handle, g_connected_count, MAX_IMU_DEVICES);  // 运行时日志已禁用
+            // ESP_LOGI(TAG, "开始服务发现...");  // 运行时日志已禁用
 
             rc = peer_add(handle->conn_handle);
             if (rc != 0) {
-                ESP_LOGE(TAG, "设备#%d添加peer失败: %d", device_index + 1, rc);
+                // ESP_LOGE(TAG, "设备#%d添加peer失败: %d", device_index + 1, rc);  // 运行时日志已禁用
                 // 标记需要重新扫描
                 g_need_rescan = true;
                 return 0;
@@ -528,7 +538,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             rc = peer_disc_all(handle->conn_handle, on_service_discovery_complete,
                               (void*)(uintptr_t)handle->conn_handle);
             if (rc != 0) {
-                ESP_LOGE(TAG, "设备#%d服务发现启动失败: %d", device_index + 1, rc);
+                // ESP_LOGE(TAG, "设备#%d服务发现启动失败: %d", device_index + 1, rc);  // 运行时日志已禁用
                 // 标记需要重新扫描
                 g_need_rescan = true;
                 return 0;
@@ -538,7 +548,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             // 服务发现完成后会在回调中继续扫描
 
         } else {
-            ESP_LOGE(TAG, "设备#%d连接失败，状态: %d", device_index + 1, event->connect.status);
+            // ESP_LOGE(TAG, "设备#%d连接失败，状态: %d", device_index + 1, event->connect.status);  // 运行时日志已禁用
             // 标记需要重新扫描
             g_need_rescan = true;
         }
@@ -550,20 +560,35 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         // 清除连接进行中标志
         g_connecting_in_progress = false;
 
-        // 查找对应的设备句柄
-        bt_imu_handle_t* handle = find_handle_by_conn(event->disconnect.conn.conn_handle);
+        uint16_t disconn_handle = event->disconnect.conn.conn_handle;
+
+        // 先删除 peer（在清理句柄之前）
+        peer_delete(disconn_handle);
+
+        // 查找对应的设备句柄（使用原始conn_handle直接查找）
+        bt_imu_handle_t* handle = NULL;
+        for (int i = 0; i < MAX_IMU_DEVICES; i++) {
+            if (g_bt_imu_handles[i] &&
+                g_bt_imu_handles[i]->conn_handle == disconn_handle) {
+                handle = g_bt_imu_handles[i];
+                break;
+            }
+        }
+
         if (!handle) {
-            ESP_LOGW(TAG, "断开未知设备");
+            // ESP_LOGW(TAG, "断开未知设备，句柄: %d", disconn_handle);  // 运行时日志已禁用
+            g_need_rescan = true;
             return 0;
         }
 
-        ESP_LOGI(TAG, "IMU设备#%d已断开连接，原因: %d", handle->device_index + 1, event->disconnect.reason);
+        // ESP_LOGI(TAG, "IMU设备#%d已断开连接，原因: %d", handle->device_index + 1, event->disconnect.reason);  // 运行时日志已禁用
 
-        // 只清理该设备的连接状态
+        // 清理该设备的连接状态
         handle->is_connected = false;
         handle->conn_handle = 0;
         handle->write_char_handle = 0;
         handle->read_char_handle = 0;
+        handle->temp_bytes_len = 0;  // 清理临时缓冲区
         g_connected_count--;
 
         // 清理数据有效性
@@ -572,9 +597,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
             xSemaphoreGive(handle->data_mutex);
         }
 
-        peer_delete(event->disconnect.conn.conn_handle);
-
-        ESP_LOGI(TAG, "设备断开，标记重新扫描 (当前已连接%d/%d个设备)", g_connected_count, MAX_IMU_DEVICES);
+        // ESP_LOGI(TAG, "设备断开，标记重新扫描 (当前已连接%d/%d个设备)", g_connected_count, MAX_IMU_DEVICES);  // 运行时日志已禁用
         g_need_rescan = true;
         return 0;
     }
@@ -591,11 +614,11 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg) {
         }
 
         if (!all_connected) {
-            ESP_LOGI(TAG, "扫描完成，未找到所有目标设备 (已连接%d/%d)，标记重新扫描",
-                     g_connected_count, MAX_IMU_DEVICES);
+            // ESP_LOGI(TAG, "扫描完成，未找到所有目标设备 (已连接%d/%d)，标记重新扫描",
+            //          g_connected_count, MAX_IMU_DEVICES);  // 运行时日志已禁用
             g_need_rescan = true;
         } else {
-            ESP_LOGI(TAG, "所有目标设备已连接");
+            // ESP_LOGI(TAG, "所有目标设备已连接");  // 运行时日志已禁用
         }
         return 0;
     }
@@ -624,7 +647,7 @@ static void bt_imu_scan(void) {
 
     rc = ble_hs_id_infer_auto(0, &own_addr_type);
     if (rc != 0) {
-        ESP_LOGE(TAG, "地址类型确定失败: %d", rc);
+        // ESP_LOGE(TAG, "地址类型确定失败: %d", rc);  // 运行时日志已禁用
         return;
     }
 
@@ -636,14 +659,14 @@ static void bt_imu_scan(void) {
     disc_params.filter_policy = 0;
     disc_params.limited = 0;
 
-    ESP_LOGI(TAG, "开始扫描目标IMU设备 (共%d个)", MAX_IMU_DEVICES);
-    for (int i = 0; i < MAX_IMU_DEVICES; i++) {
-        ESP_LOGI(TAG, "  设备#%d: %s", i + 1, format_addr_str(target_addrs[i]));
-    }
+    // ESP_LOGI(TAG, "开始扫描目标IMU设备 (共%d个)", MAX_IMU_DEVICES);  // 运行时日志已禁用
+    // for (int i = 0; i < MAX_IMU_DEVICES; i++) {
+    //     ESP_LOGI(TAG, "  设备#%d: %s", i + 1, format_addr_str(target_addrs[i]));
+    // }
 
     rc = ble_gap_disc(own_addr_type, BLE_HS_FOREVER, &disc_params, ble_gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "扫描启动失败: %d", rc);
+        // ESP_LOGE(TAG, "扫描启动失败: %d", rc);  // 运行时日志已禁用
     }
 }
 
@@ -653,7 +676,7 @@ static void bt_imu_scan(void) {
 static void ble_on_sync(void) {
     int rc = ble_hs_util_ensure_addr(0);
     if (rc != 0) {
-        ESP_LOGE(TAG, "地址设置失败: %d", rc);
+        // ESP_LOGE(TAG, "地址设置失败: %d", rc);  // 运行时日志已禁用
         return;
     }
 
@@ -665,11 +688,14 @@ static void ble_on_sync(void) {
  */
 static void connection_monitor_task(void *param) {
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(2000)); // 每2秒检查一次
+        vTaskDelay(pdMS_TO_TICKS(3000)); // 每3秒检查一次（增加间隔让资源有时间清理）
 
         if (g_need_rescan && !g_connecting_in_progress) {
+            // 延时一下让 NimBLE 完成内部清理
+            vTaskDelay(pdMS_TO_TICKS(500));
+
             g_need_rescan = false;
-            ESP_LOGI(TAG, "执行延迟的扫描请求...");
+            // ESP_LOGI(TAG, "执行延迟的扫描请求...");  // 运行时日志已禁用
             bt_imu_scan();
         }
     }
@@ -679,14 +705,14 @@ static void connection_monitor_task(void *param) {
  * 蓝牙主机重置回调
  */
 static void ble_on_reset(int reason) {
-    ESP_LOGE(TAG, "蓝牙主机重置: %d", reason);
+    // ESP_LOGE(TAG, "蓝牙主机重置: %d", reason);  // 运行时日志已禁用
 }
 
 /**
  * 蓝牙主机任务
  */
 static void ble_host_task(void *param) {
-    ESP_LOGI(TAG, "BT IMU连接器启动");
+    // ESP_LOGI(TAG, "BT IMU连接器启动");  // 运行时日志已禁用
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
@@ -697,14 +723,14 @@ static void ble_host_task(void *param) {
 
 bt_imu_handle_t* bt_imu_init(void) {
     if (g_bt_imu_handle != NULL) {
-        ESP_LOGW(TAG, "BT IMU已经初始化");
+        // ESP_LOGW(TAG, "BT IMU已经初始化");  // 运行时日志已禁用
         return g_bt_imu_handle;
     }
 
     // 分配第一个设备的句柄内存
     g_bt_imu_handles[0] = (bt_imu_handle_t*)malloc(sizeof(bt_imu_handle_t));
     if (!g_bt_imu_handles[0]) {
-        ESP_LOGE(TAG, "内存分配失败");
+        // ESP_LOGE(TAG, "内存分配失败");  // 运行时日志已禁用
         return NULL;
     }
 
@@ -714,7 +740,7 @@ bt_imu_handle_t* bt_imu_init(void) {
     // 创建互斥锁
     g_bt_imu_handles[0]->data_mutex = xSemaphoreCreateMutex();
     if (!g_bt_imu_handles[0]->data_mutex) {
-        ESP_LOGE(TAG, "互斥锁创建失败");
+        // ESP_LOGE(TAG, "互斥锁创建失败");  // 运行时日志已禁用
         free(g_bt_imu_handles[0]);
         g_bt_imu_handles[0] = NULL;
         return NULL;
@@ -730,7 +756,7 @@ bt_imu_handle_t* bt_imu_init(void) {
         ret = nvs_flash_init();
     }
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NVS初始化失败: %d", ret);
+        // ESP_LOGE(TAG, "NVS初始化失败: %d", ret);  // 运行时日志已禁用
         vSemaphoreDelete(g_bt_imu_handles[0]->data_mutex);
         free(g_bt_imu_handles[0]);
         g_bt_imu_handles[0] = NULL;
@@ -741,7 +767,7 @@ bt_imu_handle_t* bt_imu_init(void) {
     // 初始化NimBLE
     ret = nimble_port_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NimBLE初始化失败: %d", ret);
+        // ESP_LOGE(TAG, "NimBLE初始化失败: %d", ret);  // 运行时日志已禁用
         vSemaphoreDelete(g_bt_imu_handles[0]->data_mutex);
         free(g_bt_imu_handles[0]);
         g_bt_imu_handles[0] = NULL;
@@ -757,7 +783,7 @@ bt_imu_handle_t* bt_imu_init(void) {
     // 初始化peer管理
     int rc = peer_init(MYNEWT_VAL(BLE_MAX_CONNECTIONS), 64, 64, 64);
     if (rc != 0) {
-        ESP_LOGE(TAG, "peer初始化失败: %d", rc);
+        // ESP_LOGE(TAG, "peer初始化失败: %d", rc);  // 运行时日志已禁用
         vSemaphoreDelete(g_bt_imu_handles[0]->data_mutex);
         free(g_bt_imu_handles[0]);
         g_bt_imu_handles[0] = NULL;
@@ -768,7 +794,7 @@ bt_imu_handle_t* bt_imu_init(void) {
     // 设置设备名称
     rc = ble_svc_gap_device_name_set("ESP32S3-Balance");
     if (rc != 0) {
-        ESP_LOGE(TAG, "设备名称设置失败: %d", rc);
+        // ESP_LOGE(TAG, "设备名称设置失败: %d", rc);  // 运行时日志已禁用
     }
 
     // 配置存储
@@ -778,7 +804,7 @@ bt_imu_handle_t* bt_imu_init(void) {
     nimble_port_freertos_init(ble_host_task);
 
     g_bt_imu_handles[0]->initialized = true;
-    ESP_LOGI(TAG, "BT IMU模块初始化成功");
+    // ESP_LOGI(TAG, "BT IMU模块初始化成功");  // 运行时日志已禁用
 
     return g_bt_imu_handle;
 }
@@ -802,7 +828,7 @@ void bt_imu_destroy(bt_imu_handle_t* handle) {
     free(handle);
     g_bt_imu_handle = NULL;
 
-    ESP_LOGI(TAG, "BT IMU模块已销毁");
+    // ESP_LOGI(TAG, "BT IMU模块已销毁");  // 运行时日志已禁用
 }
 
 bool bt_imu_get_data(bt_imu_handle_t* handle, bt_imu_data_t* data) {
@@ -897,7 +923,7 @@ int bt_imu_init_multi(void) {
     // 检查是否已经有设备初始化
     for (int i = 0; i < MAX_IMU_DEVICES; i++) {
         if (g_bt_imu_handles[i] != NULL) {
-            ESP_LOGW(TAG, "BT IMU多设备已经初始化");
+            // ESP_LOGW(TAG, "BT IMU多设备已经初始化");  // 运行时日志已禁用
             return 0;
         }
     }
@@ -911,14 +937,14 @@ int bt_imu_init_multi(void) {
             ret = nvs_flash_init();
         }
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "NVS初始化失败: %d", ret);
+            // ESP_LOGE(TAG, "NVS初始化失败: %d", ret);  // 运行时日志已禁用
             return -1;
         }
 
         // 初始化NimBLE
         ret = nimble_port_init();
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "NimBLE初始化失败: %d", ret);
+            // ESP_LOGE(TAG, "NimBLE初始化失败: %d", ret);  // 运行时日志已禁用
             return -1;
         }
 
@@ -930,14 +956,14 @@ int bt_imu_init_multi(void) {
         // 初始化peer管理
         int rc = peer_init(MYNEWT_VAL(BLE_MAX_CONNECTIONS), 64, 64, 64);
         if (rc != 0) {
-            ESP_LOGE(TAG, "peer初始化失败: %d", rc);
+            // ESP_LOGE(TAG, "peer初始化失败: %d", rc);  // 运行时日志已禁用
             return -1;
         }
 
         // 设置设备名称
         rc = ble_svc_gap_device_name_set("ESP32S3-Balance");
         if (rc != 0) {
-            ESP_LOGE(TAG, "设备名称设置失败: %d", rc);
+            // ESP_LOGE(TAG, "设备名称设置失败: %d", rc);  // 运行时日志已禁用
         }
 
         // 配置存储
@@ -950,7 +976,7 @@ int bt_imu_init_multi(void) {
         xTaskCreate(connection_monitor_task, "bt_imu_monitor", 4096, NULL, 5, NULL);
 
         nimble_initialized = true;
-        ESP_LOGI(TAG, "BT IMU多设备模块初始化成功，准备连接%d个设备", MAX_IMU_DEVICES);
+        // ESP_LOGI(TAG, "BT IMU多设备模块初始化成功，准备连接%d个设备", MAX_IMU_DEVICES);  // 运行时日志已禁用
 
         // 设置兼容指针（当第一个设备连接时会自动设置）
     }

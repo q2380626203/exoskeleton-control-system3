@@ -358,7 +358,7 @@ static void default_power_switch_callback(gpio_num_t pin, SwitchState new_state)
  *       GPIO5: 助力减少按键
  */
 void button_detector_init(void) {
-    ESP_LOGI(TAG, "初始化按键检测器...");
+    // ESP_LOGI(TAG, "初始化按键检测器...");  // 运行时日志已禁用
 
     // 配置GPIO引脚
     configure_gpio_input(BUTTON_ASSIST_UP_PIN);
@@ -374,8 +374,8 @@ void button_detector_init(void) {
     power_switch.current_state = gpio_get_level(BUTTON_POWER_SWITCH_PIN) ? SWITCH_STATE_ON : SWITCH_STATE_OFF;
     power_switch.last_state = power_switch.current_state;
 
-    ESP_LOGI(TAG, "按键检测器初始化完成");
-    ESP_LOGI(TAG, "GPIO3: 助力增加, GPIO4: 电源开关, GPIO5: 助力减少");
+    // ESP_LOGI(TAG, "按键检测器初始化完成");  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "GPIO3: 助力增加, GPIO4: 电源开关, GPIO5: 助力减少");  // 运行时日志已禁用
 }
 
 /**

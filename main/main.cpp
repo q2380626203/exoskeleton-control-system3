@@ -18,7 +18,7 @@
 #include "button_detector.h"
 #include "tcp_data_upload.h" // TCP数据上传模块
 //#include "ai_inference.h" // AI推理模块
-//#include "bt_imu.h" // 蓝牙IMU模块
+#include "bt_imu.h" // 蓝牙IMU模块
 
 static const char *TAG = "MAIN";
 
@@ -36,6 +36,12 @@ static httpd_handle_t web_server = NULL;
 #define UART_RX_PIN     GPIO_NUM_13
 #define MAX485_RE_DE_PIN GPIO_NUM_11  // DE/RE控制引脚，拉高进入自动流控模式
 #define UART_BAUD_RATE  4000000
+
+// ==================== 蓝牙IMU功能开关 ====================
+// 定义此宏启用蓝牙IMU连接，注释掉则禁用
+// 注意：蓝牙设备只有一套，同一时间只能有一个ESP32连接
+// #define ENABLE_BT_IMU
+// =========================================================
 
 UnitreeMotorDriver motor_driver;
 SpeedFollowMode speed_follow; // 速度跟随模式实例
@@ -124,17 +130,17 @@ static const char* float_to_chinese_number(float value) {
  */
 extern "C" esp_err_t handle_web_command(const char *cmd) {
     if (strcmp(cmd, "start") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到启动命令 - 启用电机控制");
+        // ESP_LOGI(TAG, "[WEB] 接收到启动命令 - 启用电机控制");  // 运行时日志已禁用
         speed_follow.enableMotorControl(true);
         return ESP_OK;
     }
     else if (strcmp(cmd, "stop") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到停止命令 - 禁用电机控制（状态机继续运行）");
+        // ESP_LOGI(TAG, "[WEB] 接收到停止命令 - 禁用电机控制（状态机继续运行）");  // 运行时日志已禁用
         speed_follow.enableMotorControl(false);
         return ESP_OK;
     }
     else if (strcmp(cmd, "assist_up") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到增加助力命令");
+        // ESP_LOGI(TAG, "[WEB] 接收到增加助力命令");  // 运行时日志已禁用
         float new_torque = speed_follow.adjustTorque(true);
         // 播放语音：助力值
         const char* torque_text = float_to_chinese_number(new_torque);
@@ -142,7 +148,7 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
         return ESP_OK;
     }
     else if (strcmp(cmd, "assist_down") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到减少助力命令");
+        // ESP_LOGI(TAG, "[WEB] 接收到减少助力命令");  // 运行时日志已禁用
         float new_torque = speed_follow.adjustTorque(false);
         // 播放语音：助力值
         const char* torque_text = float_to_chinese_number(new_torque);
@@ -150,22 +156,22 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
         return ESP_OK;
     }
     else if (strcmp(cmd, "mode_ai") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到切换到AI模式命令");
+        // ESP_LOGI(TAG, "[WEB] 接收到切换到AI模式命令");  // 运行时日志已禁用
         speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
         return ESP_OK;
     }
     else if (strcmp(cmd, "mode_program") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到切换到程序模式命令");
+        // ESP_LOGI(TAG, "[WEB] 接收到切换到程序模式命令");  // 运行时日志已禁用
         speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
         return ESP_OK;
     }
     else if (strcmp(cmd, "mode_imu") == 0) {
-        ESP_LOGI(TAG, "[WEB] 接收到切换到IMU模式命令");
+        // ESP_LOGI(TAG, "[WEB] 接收到切换到IMU模式命令");  // 运行时日志已禁用
         speed_follow.setModeType(SPEED_FOLLOW_MODE_IMU);
         return ESP_OK;
     }
 
-    ESP_LOGW(TAG, "[WEB] 未知命令: %s", cmd);
+    // ESP_LOGW(TAG, "[WEB] 未知命令: %s", cmd);  // 运行时日志已禁用
     return ESP_FAIL;
 }
 
@@ -177,13 +183,13 @@ extern "C" esp_err_t handle_web_command(const char *cmd) {
  */
 extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
     if (strcmp(param_name, "threshold") == 0) {
-        ESP_LOGI(TAG, "[WEB] 设置阈值: %.2f", value);
+        // ESP_LOGI(TAG, "[WEB] 设置阈值: %.2f", value);  // 运行时日志已禁用
         global_speed_follow_threshold = value;
         speed_follow.setThreshold(value);
         return ESP_OK;
     }
 
-    ESP_LOGW(TAG, "[WEB] 未知参数: %s", param_name);
+    // ESP_LOGW(TAG, "[WEB] 未知参数: %s", param_name);  // 运行时日志已禁用
     return ESP_FAIL;
 }
 
@@ -195,7 +201,7 @@ extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
  * @return ESP_OK 成功, ESP_FAIL 未知参数
  */
 extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, float value) {
-    ESP_LOGI(TAG, "[WEB] 电机%d - %s: %.4f", motor, param_name, value);
+    // ESP_LOGI(TAG, "[WEB] 电机%d - %s: %.4f", motor, param_name, value);  // 运行时日志已禁用
 
     // 获取对应电机的配置
     speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
@@ -242,7 +248,7 @@ extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, f
         config->phase2.kd = value;
     }
     else {
-        ESP_LOGW(TAG, "[WEB] 未知电机参数: %s", param_name);
+        // ESP_LOGW(TAG, "[WEB] 未知电机参数: %s", param_name);  // 运行时日志已禁用
         return ESP_FAIL;
     }
 
@@ -359,7 +365,7 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
         mode_name, phase_names[m1_phase], phase_names[m2_phase]);
 
     if (written < 0 || written >= (int)max_len) {
-        ESP_LOGW(TAG, "[WEB] 状态JSON生成失败或截断");
+        // ESP_LOGW(TAG, "[WEB] 状态JSON生成失败或截断");  // 运行时日志已禁用
         return ESP_FAIL;
     }
 
@@ -378,12 +384,12 @@ extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
  */
 void motor_control_task(void *pvParameters) {
     if (!motor_driver.isInitialized()) {
-        ESP_LOGE(TAG, "电机驱动未初始化！");
+        // ESP_LOGE(TAG, "电机驱动未初始化！");  // 运行时日志已禁用
         vTaskDelete(NULL);
         return;
     }
 
-    ESP_LOGI(TAG, "电机控制任务启动 - 纯串口同步模式 (500Hz)");
+    // ESP_LOGI(TAG, "电机控制任务启动 - 纯串口同步模式 (500Hz)");  // 运行时日志已禁用
 
     // 初始化速度跟随模式
     speed_follow.init();
@@ -430,31 +436,33 @@ void motor_control_task(void *pvParameters) {
             current_motor_2 = global_motor_2;
             xSemaphoreGive(motor_params_mutex);
         } else {
-            ESP_LOGW(TAG, "Failed to take motor_params_mutex, using default parameters.");
+            // ESP_LOGW(TAG, "Failed to take motor_params_mutex, using default parameters.");  // 运行时日志已禁用
             // Fallback to default values if mutex acquisition fails
             current_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
             current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
         }
 
         // 获取蓝牙IMU数据（在循环开始处获取，供后续speed_follow.update()使用）
-        // bt_imu_data_t imu_data_left, imu_data_right;
-        // bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
-        // bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
+#ifdef ENABLE_BT_IMU
+        bt_imu_data_t imu_data_left, imu_data_right;
+        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
+        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
 
-        // // 仅在数据有效时更新roll值，并保留2位小数以减少浮点精度误差
-        // if (imu_left_valid) {
-        //     roll_left = roundf(imu_data_left.roll * 100.0f) / 100.0f;
-        // }
-        // if (imu_right_valid) {
-        //     roll_right = roundf(imu_data_right.roll * 100.0f) / 100.0f;
-        // }
+        // 仅在数据有效时更新roll值，并保留2位小数以减少浮点精度误差
+        if (imu_left_valid) {
+            roll_left = roundf(imu_data_left.roll * 100.0f) / 100.0f;
+        }
+        if (imu_right_valid) {
+            roll_right = roundf(imu_data_right.roll * 100.0f) / 100.0f;
+        }
 
         // // 更新IMU滑动窗口数据
         // speed_follow.updateRollValue(roll_left, roll_right, imu_left_valid, imu_right_valid);
-
+#else
         // 蓝牙IMU功能已禁用，使用默认值
         bool imu_left_valid = false;
         bool imu_right_valid = false;
+#endif
 
         // 控制电机1 - FOC模式，通过MIT参数控制
         MotorCmdA1 control_cmd_1;
@@ -573,7 +581,7 @@ void motor_control_task(void *pvParameters) {
         if (hz_count >= 500) {
             int64_t elapsed_us = esp_timer_get_time() - hz_start_time;
             float actual_hz = 500.0f * 1000000.0f / (float)elapsed_us;
-            printf("实际采样率: %.1f Hz (500次耗时 %.1f ms)\n", actual_hz, elapsed_us / 1000.0f);
+            //printf("实际采样率: %.1f Hz (500次耗时 %.1f ms)\n", actual_hz, elapsed_us / 1000.0f);
             hz_count = 0;
         }
 
@@ -586,6 +594,8 @@ void motor_control_task(void *pvParameters) {
             .motor2_pos = motor_data_2.pos,
             .motor2_vel = motor_data_2.vel,
             .motor2_torque = motor_data_2.t,
+            .roll_left = imu_left_valid ? roll_left : NAN,    // 未连接时用NAN标记
+            .roll_right = imu_right_valid ? roll_right : NAN, // 未连接时用NAN标记
             .m1_state_label = (int8_t)speed_follow.getCurrentM1Phase(),
             .m2_state_label = (int8_t)speed_follow.getCurrentM2Phase()
         };
@@ -593,7 +603,7 @@ void motor_control_task(void *pvParameters) {
 
         loop_count++;
 
-        // 实际运行控制: 1+4+4实际运行任务  效果最好 
+        // 实际运行控制: 1+3+4实际运行任务  8ms效果最好 
          vTaskDelay(pdMS_TO_TICKS(3));
     }
 }
@@ -611,7 +621,7 @@ void motor_control_task(void *pvParameters) {
  *          8. 创建按键检测任务和电机控制任务
  */
 extern "C" void app_main() {
-    ESP_LOGI(TAG, "ESP32 Unitree 电机驱动示例启动");
+    // ESP_LOGI(TAG, "ESP32 Unitree 电机驱动示例启动");  // 运行时日志已禁用
 
     // 初始化语音模块
     voice_module_init(&voice_module);
@@ -638,18 +648,22 @@ extern "C" void app_main() {
     // ==================== AI模型初始化结束 ====================
 
     // ==================== 初始化蓝牙IMU模块 ====================
-    // ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");
-    // if (bt_imu_init_multi() == 0) {
-    //     ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");
-    // } else {
-    //     ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");
-    // }
+#ifdef ENABLE_BT_IMU
+    // ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");  // 运行时日志已禁用
+    if (bt_imu_init_multi() == 0) {
+        // ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");  // 运行时日志已禁用
+    } else {
+        // ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");  // 运行时日志已禁用
+    }
+#else
+    // ESP_LOGI(TAG, "蓝牙IMU功能已禁用 (ENABLE_BT_IMU 未定义)");  // 运行时日志已禁用
+#endif
     // ==================== 蓝牙IMU模块初始化结束 ====================
 
     // 为电机参数创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();
     if (motor_params_mutex == NULL) {
-        ESP_LOGE(TAG, "Failed to create motor_params_mutex!");
+        // ESP_LOGE(TAG, "Failed to create motor_params_mutex!");  // 运行时日志已禁用
         return;
     }
 
@@ -690,23 +704,23 @@ extern "C" void app_main() {
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     gpio_config(&io_conf);
     gpio_set_level(MAX485_RE_DE_PIN, 1);  // 拉高DE/RE引脚
-    ESP_LOGI(TAG, "MAX485 DE/RE引脚已配置为高电平(自动流控模式)");
+    // ESP_LOGI(TAG, "MAX485 DE/RE引脚已配置为高电平(自动流控模式)");  // 运行时日志已禁用
 
     // 初始化电机驱动
     if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
-        ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");
+        // ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");  // 运行时日志已禁用
     } else {
-        ESP_LOGE(TAG, "电机驱动初始化失败！");
+        // ESP_LOGE(TAG, "电机驱动初始化失败！");  // 运行时日志已禁用
         return;
     }
 
     // 初始化按键检测器
-    ESP_LOGI(TAG, "正在初始化按键检测器...");
+    // ESP_LOGI(TAG, "正在初始化按键检测器...");  // 运行时日志已禁用
     button_detector_init();
 
     // 创建按键检测任务
     xTaskCreate(button_detector_task, "button_detector_task", 4096, NULL, 4, NULL);
-    ESP_LOGI(TAG, "按键检测任务已创建");
+    // ESP_LOGI(TAG, "按键检测任务已创建");  // 运行时日志已禁用
 
     // 创建电机控制任务
     xTaskCreate(motor_control_task, "motor_control_task", 4096, NULL, 5, NULL);

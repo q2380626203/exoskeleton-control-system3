@@ -31,10 +31,10 @@ UnitreeMotorDriver::UnitreeMotorDriver() : _uart_num((uart_port_t)-1), _max485_r
 UnitreeMotorDriver::~UnitreeMotorDriver() {
     if (_is_initialized) {
         uart_driver_delete(_uart_num);
-        ESP_LOGI(TAG_MOTOR, "UART驱动已卸载");
+        // ESP_LOGI(TAG_MOTOR, "UART驱动已卸载");  // 运行时日志已禁用
         if (_max485_re_de_pin != GPIO_NUM_NC) {
             gpio_reset_pin(_max485_re_de_pin);
-            ESP_LOGI(TAG_MOTOR, "MAX485控制引脚已复位");
+            // ESP_LOGI(TAG_MOTOR, "MAX485控制引脚已复位");  // 运行时日志已禁用
         }
     }
 }
@@ -134,7 +134,7 @@ bool UnitreeMotorDriver::unpack_motor_data_go_m8010_6(const uint8_t* buffer, Mot
     uint16_t calculated_crc = crc_ccitt(0x0000, buffer, GO_M8010_6_DATA_LENGTH - 2);
 
     if (received_crc != calculated_crc) {
-        ESP_LOGE(TAG_MOTOR, "CRC校验失败: 接收0x%04X, 计算0x%04X", received_crc, calculated_crc);
+        // ESP_LOGE(TAG_MOTOR, "CRC校验失败: 接收0x%04X, 计算0x%04X", received_crc, calculated_crc);  // 运行时日志已禁用
         // 临时跳过CRC校验，继续解析数据
         return false;
     }
@@ -212,32 +212,32 @@ bool UnitreeMotorDriver::init(uart_port_t uart_num, gpio_num_t tx_pin, gpio_num_
 
     esp_err_t err = uart_driver_install(_uart_num, 1024, 1024, 0, NULL, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG_MOTOR, "安装UART驱动失败, 错误码: %d", err);
+        // ESP_LOGE(TAG_MOTOR, "安装UART驱动失败, 错误码: %d", err);  // 运行时日志已禁用
         return false;
     }
 
     err = uart_set_pin(_uart_num, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG_MOTOR, "设置UART引脚失败, 错误码: %d", err);
+        // ESP_LOGE(TAG_MOTOR, "设置UART引脚失败, 错误码: %d", err);  // 运行时日志已禁用
         uart_driver_delete(_uart_num);
         return false;
     }
 
     err = uart_param_config(_uart_num, &uart_config);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG_MOTOR, "配置UART参数失败, 错误码: %d", err);
+        // ESP_LOGE(TAG_MOTOR, "配置UART参数失败, 错误码: %d", err);  // 运行时日志已禁用
         uart_driver_delete(_uart_num);
         return false;
     }
 
     err = uart_set_rx_timeout(_uart_num, 3);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG_MOTOR, "设置RX超时失败, 错误码: %d", err);
+        // ESP_LOGE(TAG_MOTOR, "设置RX超时失败, 错误码: %d", err);  // 运行时日志已禁用
         uart_driver_delete(_uart_num);
         return false;
     }
 
-    ESP_LOGI(TAG_MOTOR, "纯串口模式已启用，外部RS485模块自动控制方向");
+    // ESP_LOGI(TAG_MOTOR, "纯串口模式已启用，外部RS485模块自动控制方向");  // 运行时日志已禁用
 
     uart_flush(_uart_num);
 
@@ -269,7 +269,7 @@ bool UnitreeMotorDriver::init(uart_port_t uart_num, gpio_num_t tx_pin, gpio_num_
  */
 esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data) {
     if (!_is_initialized) {
-        ESP_LOGE(TAG_MOTOR, "电机驱动未初始化，无法发送/接收数据");
+        // ESP_LOGE(TAG_MOTOR, "电机驱动未初始化，无法发送/接收数据");  // 运行时日志已禁用
         return ESP_FAIL;
     }
 
@@ -281,7 +281,7 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
     // 发送数据包
     int tx_bytes = uart_write_bytes(_uart_num, (const char*)tx_buffer, packed_len);
     if (tx_bytes != packed_len) {
-        ESP_LOGE(TAG_MOTOR, "发送字节数不匹配: 期望%d, 实际%d", packed_len, tx_bytes);
+        // ESP_LOGE(TAG_MOTOR, "发送字节数不匹配: 期望%d, 实际%d", packed_len, tx_bytes);  // 运行时日志已禁用
         return ESP_FAIL;
     }
 
@@ -316,7 +316,7 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
                             return ESP_OK;
                         } else {
                             // CRC校验失败，继续查找下一个可能的帧头
-                            ESP_LOGD(TAG_MOTOR, "在位置%d找到帧头但CRC校验失败，继续查找", i);
+                            // ESP_LOGD(TAG_MOTOR, "在位置%d找到帧头但CRC校验失败，继续查找", i);  // 运行时日志已禁用
                         }
                     }
                 }
@@ -328,23 +328,23 @@ esp_err_t UnitreeMotorDriver::sendRecv(const MotorCmdA1& cmd, MotorDataA1& data)
 
     // 所有尝试都失败
     if (total_bytes > 0) {
-        ESP_LOGW(TAG_MOTOR, "未找到有效数据帧，接收了%d字节", total_bytes);
-        // 打印原始数据用于调试
-        printf("原始数据: ");
-        for (int i = 0; i < total_bytes && i < 32; i++) {
-            printf("0x%02X ", temp_buffer[i]);
-        }
-        printf("\n");
+        // ESP_LOGW(TAG_MOTOR, "未找到有效数据帧，接收了%d字节", total_bytes);  // 运行时日志已禁用
+        // 打印原始数据用于调试（已禁用以减少串口输出）
+        // printf("原始数据: ");
+        // for (int i = 0; i < total_bytes && i < 32; i++) {
+        //     printf("0x%02X ", temp_buffer[i]);
+        // }
+        // printf("\n");
         return ESP_FAIL;
     } else {
-        // 频率限制：每5秒最多打印一次超时警告
-        static uint32_t last_timeout_warning_time = 0;
-        uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        // 频率限制：每5秒最多打印一次超时警告（已禁用以减少串口输出）
+        // static uint32_t last_timeout_warning_time = 0;
+        // uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-        if (current_time - last_timeout_warning_time >= 5000) {
-            ESP_LOGW(TAG_MOTOR, "接收超时 - 没有收到任何数据 (未连接电机?)");
-            last_timeout_warning_time = current_time;
-        }
+        // if (current_time - last_timeout_warning_time >= 5000) {
+        //     ESP_LOGW(TAG_MOTOR, "接收超时 - 没有收到任何数据 (未连接电机?)");
+        //     last_timeout_warning_time = current_time;
+        // }
         return ESP_ERR_TIMEOUT;
     }
 }

@@ -232,12 +232,12 @@ void SpeedFollowMode::init() {
     _velocity_scale = 0.8f;         // 速度缩放因子
     _phase2_vel_threshold = 0.5f;   // PHASE2完成速度阈值
 
-    ESP_LOGI(TAG, "双电机协作速度跟随模式已初始化");
-    ESP_LOGI(TAG, "首次触发模式：ch6触发→等待300ms→检测2号-v，ch7触发→等待300ms→检测1号+v");
-    ESP_LOGI(TAG, "电机1触发条件: 速度 > %.1f rad/s", _config_motor1.trigger_speed);
-    ESP_LOGI(TAG, "电机2触发条件: 速度 < %.1f rad/s", _config_motor2.trigger_speed);
-    ESP_LOGI(TAG, "动态参数: PHASE1超时=%dms, PHASE2超时=%dms, 速度缩放=%.2f, PHASE2完成阈值=±%.2f rad/s",
-             _phase1_timeout_ms, _phase2_timeout_ms, _velocity_scale, _phase2_vel_threshold);
+    // ESP_LOGI(TAG, "双电机协作速度跟随模式已初始化");  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "首次触发模式：ch6触发→等待300ms→检测2号-v，ch7触发→等待300ms→检测1号+v");
+    // ESP_LOGI(TAG, "电机1触发条件: 速度 > %.1f rad/s", _config_motor1.trigger_speed);
+    // ESP_LOGI(TAG, "电机2触发条件: 速度 < %.1f rad/s", _config_motor2.trigger_speed);
+    // ESP_LOGI(TAG, "动态参数: PHASE1超时=%dms, PHASE2超时=%dms, 速度缩放=%.2f, PHASE2完成阈值=±%.2f rad/s",
+    //          _phase1_timeout_ms, _phase2_timeout_ms, _velocity_scale, _phase2_vel_threshold);
 }
 
 /**
@@ -306,9 +306,9 @@ void SpeedFollowMode::setDiffBuffers(motor_position_buffers_t* buffers) {
 void SpeedFollowMode::enableAutoSwitch(bool enable) {
     _auto_switch_enabled = enable;
     if (enable) {
-        ESP_LOGI(TAG, "自动开关已启用，阈值: %.1f", _threshold_value);
+        // ESP_LOGI(TAG, "自动开关已启用，阈值: %.1f", _threshold_value);  // 运行时日志已禁用
     } else {
-        ESP_LOGI(TAG, "自动开关已禁用");
+        // ESP_LOGI(TAG, "自动开关已禁用");  // 运行时日志已禁用
         _is_active = false;
         _first_trigger_detected = false;
     }
@@ -322,7 +322,7 @@ void SpeedFollowMode::enableAutoSwitch(bool enable) {
  */
 void SpeedFollowMode::setThreshold(float threshold) {
     _threshold_value = threshold;
-    ESP_LOGI(TAG, "触发阈值设置为: %.1f", _threshold_value);
+    // ESP_LOGI(TAG, "触发阈值设置为: %.1f", _threshold_value);  // 运行时日志已禁用
 }
 
 /**
@@ -932,7 +932,7 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         _both_static_start_time = current_time;
                     } else if (current_time - _both_static_start_time >= 4000) {
                         // 双腿都静止超过4秒，退出助力
-                        ESP_LOGI(TAG, "✅ AI模式：双腿都静止超过4秒，退出助力");
+                        // ESP_LOGI(TAG, "✅ AI模式：双腿都静止超过4秒，退出助力");  // 运行时日志已禁用
                         _is_stationary = true;
                         _is_active = false;
                         _state = SPEED_FOLLOW_IDLE;
@@ -999,7 +999,7 @@ void SpeedFollowMode::startButtonWaiting() {
     _is_button_triggered = true;
     _is_stationary = false;
     _state = SPEED_FOLLOW_BUTTON_WAITING;
-    ESP_LOGI(TAG, "🔘 按键触发：进入BUTTON_WAITING状态，同时检测两个电机速度");
+    // ESP_LOGI(TAG, "🔘 按键触发：进入BUTTON_WAITING状态，同时检测两个电机速度");  // 运行时日志已禁用
 }
 
 /**
@@ -1031,7 +1031,7 @@ float SpeedFollowMode::adjustTorque(bool increase) {
         }
         _config_motor2.phase1.torque = new_torque2;
 
-        ESP_LOGI(TAG, "[WEB] 助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+        // ESP_LOGI(TAG, "[WEB] 助力增加 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);  // 运行时日志已禁用
         return new_torque1;
     } else {
         // 减少助力
@@ -1047,7 +1047,7 @@ float SpeedFollowMode::adjustTorque(bool increase) {
         }
         _config_motor2.phase1.torque = new_torque2;
 
-        ESP_LOGI(TAG, "[WEB] 助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);
+        // ESP_LOGI(TAG, "[WEB] 助力减少 - 电机1: %.2f, 电机2: %.2f", new_torque1, new_torque2);  // 运行时日志已禁用
         return new_torque1;
     }
 }
@@ -1065,9 +1065,9 @@ void SpeedFollowMode::setModeType(speed_follow_mode_type_t mode) {
     // 仅在IDLE状态允许切换
     if (_state == SPEED_FOLLOW_IDLE) {
         _mode_type = mode;
-        const char* mode_name = (mode == SPEED_FOLLOW_MODE_AI) ? "AI模式" :
-                                (mode == SPEED_FOLLOW_MODE_IMU) ? "IMU模式" : "程序模式";
-        ESP_LOGI(TAG, "[模式切换] 切换到%s", mode_name);
+        // const char* mode_name = (mode == SPEED_FOLLOW_MODE_AI) ? "AI模式" :
+        //                         (mode == SPEED_FOLLOW_MODE_IMU) ? "IMU模式" : "程序模式";
+        // ESP_LOGI(TAG, "[模式切换] 切换到%s", mode_name);  // 运行时日志已禁用
 
         // 切换到IMU模式时清空滑动窗口
         if (mode == SPEED_FOLLOW_MODE_IMU) {
@@ -1075,7 +1075,7 @@ void SpeedFollowMode::setModeType(speed_follow_mode_type_t mode) {
             initRollWindow(_roll_right_window);
         }
     } else {
-        ESP_LOGW(TAG, "[模式切换] 当前状态非IDLE，无法切换模式");
+        // ESP_LOGW(TAG, "[模式切换] 当前状态非IDLE，无法切换模式");  // 运行时日志已禁用
     }
 }
 

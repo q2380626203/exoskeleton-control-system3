@@ -33,18 +33,23 @@ SERVER_PORT = 25565       # 本地端口（frp内网穿透映射到此端口）
 BUFFER_SIZE = 8192
 CSV_OUTPUT_DIR = './data'
 
-# 数据包格式 (v5: int64时间戳 + int16电机数据)
+# 数据包格式 (v6: int64时间戳 + int16电机数据 + int16 IMU roll数据)
 PACKET_MAGIC = 0xAA55
 PACKET_HEADER_SIZE = 8    # magic(2) + device_id(1) + version(1) + seq(2) + count(2)
 SAMPLES_PER_PACKET = 100
 CHANNELS_PER_SAMPLE = 6   # 6个电机数据通道
-SAMPLE_SIZE = 8 + CHANNELS_PER_SAMPLE * 2 + 2  # int64 + 6×int16 + 2×int8 = 8 + 12 + 2 = 22 bytes
-PACKET_SIZE = PACKET_HEADER_SIZE + SAMPLES_PER_PACKET * SAMPLE_SIZE  # 8 + 2200 = 2208 bytes
+# v6: int64(8) + 6×int16(12) + 2×int16 roll(4) + 2×int8 state(2) = 26 bytes
+SAMPLE_SIZE = 8 + CHANNELS_PER_SAMPLE * 2 + 4 + 2  # 26 bytes
+PACKET_SIZE = PACKET_HEADER_SIZE + SAMPLES_PER_PACKET * SAMPLE_SIZE  # 8 + 2600 = 2608 bytes
+
+# 蓝牙IMU未连接标记值
+BT_IMU_NOT_CONNECTED = 0x7FFF  # int16最大正值，表示未连接
 
 # 通道名称
 CHANNEL_NAMES = [
     'motor1_pos', 'motor1_vel', 'motor1_torque',
     'motor2_pos', 'motor2_vel', 'motor2_torque',
+    'roll_left', 'roll_right',  # 蓝牙IMU roll角度，None表示未连接
     'm1_state_label', 'm2_state_label'  # 状态标签: 0=空闲, 1=抬腿, 2=压腿, 3=检测速度触发
 ]
 
@@ -151,15 +156,17 @@ def parse_packet(data):
     """
     解析数据包
 
-    数据包格式 (v5, 8字节包头):
+    数据包格式 (v6, 8字节包头):
     - magic: uint16 (0xAA55)
     - device_id: uint8 (设备ID: 1, 2, 3...)
-    - version: uint8 (协议版本=5)
+    - version: uint8 (协议版本=6)
     - seq: uint16 (序列号)
     - count: uint16 (数据条数)
-    - samples: [tcp_sample_t] 每条22字节:
+    - samples: [tcp_sample_t] 每条26字节:
         - timestamp_ms: int64 (8字节, 毫秒时间戳如1734567890123)
         - channels: int16[6] (12字节, 6个电机数据通道, 原值×100)
+        - roll_left: int16 (2字节, 左腿roll角度×100, 0x7FFF=未连接)
+        - roll_right: int16 (2字节, 右腿roll角度×100, 0x7FFF=未连接)
         - m1_state: int8 (1字节)
         - m2_state: int8 (1字节)
     """
@@ -182,14 +189,22 @@ def parse_packet(data):
         if offset + SAMPLE_SIZE > len(data):
             break
 
-        # 解析int64时间戳 + 6个int16通道 + 2个int8状态
+        # 解析int64时间戳 + 6个int16通道 + 2个int16 roll + 2个int8状态
         timestamp_ms = struct.unpack('<q', data[offset:offset + 8])[0]
         channels_raw = struct.unpack('<6h', data[offset + 8:offset + 20])
-        m1_state, m2_state = struct.unpack('<bb', data[offset + 20:offset + 22])
+        roll_left_raw, roll_right_raw = struct.unpack('<2h', data[offset + 20:offset + 24])
+        m1_state, m2_state = struct.unpack('<bb', data[offset + 24:offset + 26])
 
         # 还原电机数据 (÷100)
         channels = [ch / 100.0 for ch in channels_raw]
-        # 添加状态标签
+
+        # 还原roll数据，0x7FFF表示未连接，用None标记
+        roll_left = None if roll_left_raw == BT_IMU_NOT_CONNECTED else roll_left_raw / 100.0
+        roll_right = None if roll_right_raw == BT_IMU_NOT_CONNECTED else roll_right_raw / 100.0
+
+        # 添加roll数据和状态标签
+        channels.append(roll_left)
+        channels.append(roll_right)
         channels.append(m1_state)
         channels.append(m2_state)
 
@@ -222,7 +237,9 @@ def save_to_csv(csv_file, samples):
             # 跳过NTP时间未同步的数据（timestamp为0）
             if sample['timestamp'] == 0.0:
                 continue
-            row = [sample['timestamp'], sample['seq'], sample['device_id']] + list(sample['values'])
+            # 将None值转为空字符串，便于CSV中表示未连接状态
+            values = ['' if v is None else v for v in sample['values']]
+            row = [sample['timestamp'], sample['seq'], sample['device_id']] + values
             writer.writerow(row)
 
 

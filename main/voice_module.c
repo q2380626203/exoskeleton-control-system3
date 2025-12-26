@@ -88,7 +88,7 @@ void voice_module_init(VoiceModule* module) {
     // 等待模块稳定
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    ESP_LOGI(TAG, "语音模块初始化完成");
+    // ESP_LOGI(TAG, "语音模块初始化完成");  // 运行时日志已禁用
 }
 
 /**
