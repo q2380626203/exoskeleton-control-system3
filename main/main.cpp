@@ -1,67 +1,52 @@
-#include <iostream>
-#include <math.h>   // For roundf
-#include <string.h> // For strtok
-#include <stdlib.h> // For atof, atoi
-#include <algorithm> // For std::min, resolves 'MIN' was not declared in this scope
+/**
+ * @file main.cpp
+ * @brief ESP32外骨骼控制系统主程序
+ */
+
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
+#include <algorithm>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h" // For Semaphore
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include "unitree_motor.h"
 #include "motor_commands.h"
 #include "speed_follow_mode.h"
 #include "position_buffer.h"
-#include "driver/gpio.h"
 #include "wifi_webserver.h"
 #include "voice_module.h"
 #include "button_detector.h"
-#include "tcp_data_upload.h" // TCP数据上传模块
-//#include "ai_inference.h" // AI推理模块
-#include "bt_imu.h" // 蓝牙IMU模块
+#include "tcp_data_upload.h"
+#include "bt_imu.h"
 
-static const char *TAG = "MAIN";
+// ==================== 硬件配置 ====================
+#define MOTOR_ID_1       0x01
+#define MOTOR_ID_2       0x02
+#define UART_PORT_NUM    UART_NUM_2
+#define UART_TX_PIN      GPIO_NUM_12
+#define UART_RX_PIN      GPIO_NUM_13
+#define MAX485_RE_DE_PIN GPIO_NUM_11
+#define UART_BAUD_RATE   4000000
 
-// 语音模块实例（全局可见，供C和C++代码使用）
+// 4G模块复位引脚 (低电平复位，正常工作时保持高电平)
+#define GPIO_4G_RESET    GPIO_NUM_10
+
+// ==================== 功能开关 ====================
+// #define ENABLE_BT_IMU  // 启用蓝牙IMU
+
+// ==================== 全局实例 ====================
 VoiceModule voice_module{};
-
-// Web服务器句柄
-static httpd_handle_t web_server = NULL;
-
-// 定义电机ID和UART端口/引脚
-#define MOTOR_ID_1      0x01
-#define MOTOR_ID_2      0x02
-#define UART_PORT_NUM   UART_NUM_2
-#define UART_TX_PIN     GPIO_NUM_12
-#define UART_RX_PIN     GPIO_NUM_13
-#define MAX485_RE_DE_PIN GPIO_NUM_11  // DE/RE控制引脚，拉高进入自动流控模式
-#define UART_BAUD_RATE  4000000
-
-// ==================== 蓝牙IMU功能开关 ====================
-// 定义此宏启用蓝牙IMU连接，注释掉则禁用
-// 注意：蓝牙设备只有一套，同一时间只能有一个ESP32连接
-// #define ENABLE_BT_IMU
-// =========================================================
-
 UnitreeMotorDriver motor_driver;
-SpeedFollowMode speed_follow; // 速度跟随模式实例
-motor_position_buffers_t position_buffers; // 位置缓存区
+SpeedFollowMode speed_follow;
+motor_position_buffers_t position_buffers;
+SemaphoreHandle_t motor_params_mutex;
+float global_speed_follow_threshold = 6.0f;
 
-// ==================== AI推理相关 ====================
-// 速度窗口缓冲区 (m1和m2各50个采样点，仅速度)
-#define AI_WINDOW_SIZE 50
-static float m1_velocity_window[AI_WINDOW_SIZE] = {0};
-static float m2_velocity_window[AI_WINDOW_SIZE] = {0};
-static int ai_window_index = 0;  // 窗口索引
-static bool ai_model_ready = false;  // AI模型是否已初始化
-
-// AI推理结果
-static int m1_predicted_phase = 0;  // m1预测的阶段 (0:静止, 1:抬腿, 2:压腿)
-static int m2_predicted_phase = 0;  // m2预测的阶段
-// ==================== AI推理相关结束 ====================
-
-
-// Motor command parameters for both motors, protected by a mutex
+// ==================== 电机参数 ====================
 struct MotorParams {
     uint8_t motor_id;
     uint8_t motor_mode;
@@ -72,520 +57,139 @@ struct MotorParams {
     float motor_kd;
 };
 
-static MotorParams global_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
-static MotorParams global_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
-
-SemaphoreHandle_t motor_params_mutex; // 用于保护电机参数的互斥锁
-
-// 速度跟随模式配置参数
-static float global_speed_follow_threshold = 6.0f; // 自动激活阈值（可调整）
+static MotorParams global_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+static MotorParams global_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
 /**
- * @brief 将浮点数转换为中文数字字符串（用于语音播报）
- * @param value 浮点数值（范围 0.0 ~ 2.0）
- * @return 中文数字字符串
- * @note 将浮点数乘以10后转换为整数，然后转换为对应的中文数字
- *       例如：0.6 -> "六", 0.7 -> "七", 1.5 -> "十五", 2.0 -> "二十"
- */
-static const char* float_to_chinese_number(float value) {
-    // 将浮点数乘以10并四舍五入转换为整数
-    int num = (int)(value * 10 + 0.5f);
-
-    // 限制范围在 0-20
-    if (num < 0) num = 0;
-    if (num > 20) num = 20;
-
-    // 中文数字映射表
-    static const char* chinese_numbers[] = {
-        "零",   // 0
-        "一",   // 1
-        "二",   // 2
-        "三",   // 3
-        "四",   // 4
-        "五",   // 5
-        "六",   // 6
-        "七",   // 7
-        "八",   // 8
-        "九",   // 9
-        "十",   // 10
-        "十一", // 11
-        "十二", // 12
-        "十三", // 13
-        "十四", // 14
-        "十五", // 15
-        "十六", // 16
-        "十七", // 17
-        "十八", // 18
-        "十九", // 19
-        "二十"  // 20
-    };
-
-    return chinese_numbers[num];
-}
-
-/**
- * @brief Web服务器命令处理回调
- * @param cmd 接收到的命令字符串 ("start", "stop", "assist_up", "assist_down")
- * @return ESP_OK 成功, ESP_FAIL 未知命令
- */
-extern "C" esp_err_t handle_web_command(const char *cmd) {
-    if (strcmp(cmd, "start") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到启动命令 - 启用电机控制");  // 运行时日志已禁用
-        speed_follow.enableMotorControl(true);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "stop") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到停止命令 - 禁用电机控制（状态机继续运行）");  // 运行时日志已禁用
-        speed_follow.enableMotorControl(false);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "assist_up") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到增加助力命令");  // 运行时日志已禁用
-        float new_torque = speed_follow.adjustTorque(true);
-        // 播放语音：助力值
-        const char* torque_text = float_to_chinese_number(new_torque);
-        voice_speak(&voice_module, torque_text);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "assist_down") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到减少助力命令");  // 运行时日志已禁用
-        float new_torque = speed_follow.adjustTorque(false);
-        // 播放语音：助力值
-        const char* torque_text = float_to_chinese_number(new_torque);
-        voice_speak(&voice_module, torque_text);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "mode_ai") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到切换到AI模式命令");  // 运行时日志已禁用
-        speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "mode_program") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到切换到程序模式命令");  // 运行时日志已禁用
-        speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
-        return ESP_OK;
-    }
-    else if (strcmp(cmd, "mode_imu") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 接收到切换到IMU模式命令");  // 运行时日志已禁用
-        speed_follow.setModeType(SPEED_FOLLOW_MODE_IMU);
-        return ESP_OK;
-    }
-
-    // ESP_LOGW(TAG, "[WEB] 未知命令: %s", cmd);  // 运行时日志已禁用
-    return ESP_FAIL;
-}
-
-/**
- * @brief Web服务器参数设置回调
- * @param param_name 参数名称 (如 "threshold")
- * @param value 参数值
- * @return ESP_OK 成功, ESP_FAIL 未知参数
- */
-extern "C" esp_err_t handle_web_param(const char *param_name, float value) {
-    if (strcmp(param_name, "threshold") == 0) {
-        // ESP_LOGI(TAG, "[WEB] 设置阈值: %.2f", value);  // 运行时日志已禁用
-        global_speed_follow_threshold = value;
-        speed_follow.setThreshold(value);
-        return ESP_OK;
-    }
-
-    // ESP_LOGW(TAG, "[WEB] 未知参数: %s", param_name);  // 运行时日志已禁用
-    return ESP_FAIL;
-}
-
-/**
- * @brief Web服务器电机参数设置回调
- * @param motor 电机编号 (1 或 2)
- * @param param_name 参数名称 (如 "trigger_speed", "p1_vel" 等)
- * @param value 参数值
- * @return ESP_OK 成功, ESP_FAIL 未知参数
- */
-extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, float value) {
-    // ESP_LOGI(TAG, "[WEB] 电机%d - %s: %.4f", motor, param_name, value);  // 运行时日志已禁用
-
-    // 获取对应电机的配置
-    speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
-
-    if (strcmp(param_name, "trigger_speed") == 0) {
-        config->trigger_speed = value;
-    }
-    else if (strcmp(param_name, "phase1_duration") == 0) {
-        config->phase1_duration_ms = (uint32_t)value;
-    }
-    else if (strcmp(param_name, "phase2_duration") == 0) {
-        config->phase2_duration_ms = (uint32_t)value;
-    }
-    else if (strcmp(param_name, "waiting_duration") == 0) {
-        config->waiting_duration_ms = (uint32_t)value;
-    }
-    else if (strcmp(param_name, "idle_duration") == 0) {
-        config->idle_duration_ms = (uint32_t)value;
-    }
-    // Phase1参数
-    else if (strcmp(param_name, "p1_vel") == 0) {
-        config->phase1.vel = value;
-    }
-    else if (strcmp(param_name, "p1_torque") == 0) {
-        config->phase1.torque = value;
-    }
-    else if (strcmp(param_name, "p1_kp") == 0) {
-        config->phase1.kp = value;
-    }
-    else if (strcmp(param_name, "p1_kd") == 0) {
-        config->phase1.kd = value;
-    }
-    // Phase2参数
-    else if (strcmp(param_name, "p2_vel") == 0) {
-        config->phase2.vel = value;
-    }
-    else if (strcmp(param_name, "p2_torque") == 0) {
-        config->phase2.torque = value;
-    }
-    else if (strcmp(param_name, "p2_kp") == 0) {
-        config->phase2.kp = value;
-    }
-    else if (strcmp(param_name, "p2_kd") == 0) {
-        config->phase2.kd = value;
-    }
-    else {
-        // ESP_LOGW(TAG, "[WEB] 未知电机参数: %s", param_name);  // 运行时日志已禁用
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
-
-/**
- * @brief Web服务器电机参数读取回调
- * @param motor 电机编号 (1 或 2)
- * @param param_name 参数名称
- * @param value 输出参数，用于返回参数值
- * @return ESP_OK 成功, ESP_FAIL 未知参数
- */
-extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_name, float *value) {
-    // 获取对应电机的配置
-    speed_follow_config_t* config = speed_follow.getMotorConfig(motor);
-
-    if (strcmp(param_name, "trigger_speed") == 0) {
-        *value = config->trigger_speed;
-    }
-    else if (strcmp(param_name, "phase1_duration") == 0) {
-        *value = (float)config->phase1_duration_ms;
-    }
-    else if (strcmp(param_name, "phase2_duration") == 0) {
-        *value = (float)config->phase2_duration_ms;
-    }
-    else if (strcmp(param_name, "waiting_duration") == 0) {
-        *value = (float)config->waiting_duration_ms;
-    }
-    else if (strcmp(param_name, "idle_duration") == 0) {
-        *value = (float)config->idle_duration_ms;
-    }
-    // Phase1参数
-    else if (strcmp(param_name, "p1_vel") == 0) {
-        *value = config->phase1.vel;
-    }
-    else if (strcmp(param_name, "p1_torque") == 0) {
-        *value = config->phase1.torque;
-    }
-    else if (strcmp(param_name, "p1_kp") == 0) {
-        *value = config->phase1.kp;
-    }
-    else if (strcmp(param_name, "p1_kd") == 0) {
-        *value = config->phase1.kd;
-    }
-    // Phase2参数
-    else if (strcmp(param_name, "p2_vel") == 0) {
-        *value = config->phase2.vel;
-    }
-    else if (strcmp(param_name, "p2_torque") == 0) {
-        *value = config->phase2.torque;
-    }
-    else if (strcmp(param_name, "p2_kp") == 0) {
-        *value = config->phase2.kp;
-    }
-    else if (strcmp(param_name, "p2_kd") == 0) {
-        *value = config->phase2.kd;
-    }
-    else {
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
-
-/**
- * @brief Web服务器状态获取回调
- * @param state_json 输出JSON字符串的缓冲区
- * @param max_len 缓冲区最大长度
- * @return ESP_OK 成功, ESP_FAIL 失败
- */
-extern "C" esp_err_t handle_web_get_state(char *state_json, size_t max_len) {
-    // 状态机中文映射
-    const char* state_names[] = {
-        "空闲",           // SPEED_FOLLOW_IDLE
-        "等待触发",        // SPEED_FOLLOW_WAITING
-        "按键等待",        // SPEED_FOLLOW_BUTTON_WAITING
-        "1号电机检测中",   // SPEED_FOLLOW_MOTOR1_WORKING
-        "2号电机检测中",   // SPEED_FOLLOW_MOTOR2_WORKING
-        "抬腿阶段",        // SPEED_FOLLOW_PHASE1
-        "压腿阶段"         // SPEED_FOLLOW_PHASE2
-    };
-
-    // 阶段中文映射
-    const char* phase_names[] = {
-        "静止",    // 0
-        "抬腿",    // 1
-        "压腿"     // 2
-    };
-
-    speed_follow_state_t current_state = speed_follow.getState();
-    uint8_t active_motor = speed_follow.getActiveMotor();
-    uint8_t lifting_motor = speed_follow.getLiftingMotor();
-
-    // 获取电机1的助力值（phase1.torque）
-    speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
-    float torque_value = motor1_config->phase1.torque;
-
-    // 获取当前模式和阶段
-    speed_follow_mode_type_t mode_type = speed_follow.getModeType();
-    const char* mode_name = (mode_type == SPEED_FOLLOW_MODE_AI) ? "AI模式" :
-                            (mode_type == SPEED_FOLLOW_MODE_IMU) ? "IMU模式" : "程序模式";
-
-    int m1_phase = speed_follow.getCurrentM1Phase();
-    int m2_phase = speed_follow.getCurrentM2Phase();
-
-    // 确保阶段值在合法范围内
-    if (m1_phase < 0 || m1_phase > 2) m1_phase = 0;
-    if (m2_phase < 0 || m2_phase > 2) m2_phase = 0;
-
-    int written = snprintf(state_json, max_len,
-        "{\"state\":\"%s\",\"state_id\":%d,\"active_motor\":%d,\"lifting_motor\":%d,\"torque\":%.2f,\"mode\":\"%s\",\"m1_phase\":\"%s\",\"m2_phase\":\"%s\"}",
-        state_names[current_state], current_state, active_motor, lifting_motor, torque_value,
-        mode_name, phase_names[m1_phase], phase_names[m2_phase]);
-
-    if (written < 0 || written >= (int)max_len) {
-        // ESP_LOGW(TAG, "[WEB] 状态JSON生成失败或截断");  // 运行时日志已禁用
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
-
-/**
- * @brief 电机控制任务，以计算实际频率执行双电机同步控制
- * @param pvParameters FreeRTOS任务参数（未使用）
- * @details 执行流程：
- *          1. 读取全局电机参数（互斥锁保护）
- *          2. 向两个电机发送控制命令并接收反馈
- *          3. 更新位置缓存区并进行波形分析
- *          4. 调用速度跟随状态机 update()
- *          5. 打印电机数据（10通道格式化输出）
+ * @brief 电机控制任务
  */
 void motor_control_task(void *pvParameters) {
     if (!motor_driver.isInitialized()) {
-        // ESP_LOGE(TAG, "电机驱动未初始化！");  // 运行时日志已禁用
         vTaskDelete(NULL);
         return;
     }
 
-    // ESP_LOGI(TAG, "电机控制任务启动 - 纯串口同步模式 (500Hz)");  // 运行时日志已禁用
-
     // 初始化速度跟随模式
     speed_follow.init();
-
-    // 启用自动开关功能
     speed_follow.enableAutoSwitch(true);
     speed_follow.setThreshold(global_speed_follow_threshold);
-
-    // 初始化位置缓存区
     position_buffer_init(&position_buffers);
 
-    // 设置双电机速度跟随模式参数访问
-    speed_follow.setDualMotorParams(&global_motor_1.motor_id, &global_motor_1.motor_mode, &global_motor_1.motor_pos,
-                                   &global_motor_1.motor_vel, &global_motor_1.motor_t, &global_motor_1.motor_kp, &global_motor_1.motor_kd,
-                                   &global_motor_2.motor_id, &global_motor_2.motor_mode, &global_motor_2.motor_pos,
-                                   &global_motor_2.motor_vel, &global_motor_2.motor_t, &global_motor_2.motor_kp, &global_motor_2.motor_kd,
-                                   motor_params_mutex);
-
-    // 设置差值缓存区访问（用于超时清空）
+    // 设置双电机参数访问
+    speed_follow.setDualMotorParams(
+        &global_motor_1.motor_id, &global_motor_1.motor_mode, &global_motor_1.motor_pos,
+        &global_motor_1.motor_vel, &global_motor_1.motor_t, &global_motor_1.motor_kp, &global_motor_1.motor_kd,
+        &global_motor_2.motor_id, &global_motor_2.motor_mode, &global_motor_2.motor_pos,
+        &global_motor_2.motor_vel, &global_motor_2.motor_t, &global_motor_2.motor_kp, &global_motor_2.motor_kd,
+        motor_params_mutex);
     speed_follow.setDiffBuffers(&position_buffers);
 
-    // 统计计数器
+    // 局部变量
     uint32_t loop_count = 0;
-
-    // 电机数据变量
-    MotorDataA1 motor_data_1{};
-    MotorDataA1 motor_data_2{};
-
-    // Local variables to hold the current parameters for both motors
+    MotorDataA1 motor_data_1{}, motor_data_2{};
     MotorParams current_motor_1, current_motor_2;
-
-    // 数据输出相关变量（循环外初始化，避免重复赋值）
-    float ch6_max = 0.0f;
-    float ch7_max = 0.0f;
-    float m1_ai_label = 0.0f;
-    float m2_ai_label = 0.0f;
-    float roll_left = 0.0f;
-    float roll_right = 0.0f;
+    float ch6_max = 0.0f, ch7_max = 0.0f;
+    float roll_left = 0.0f, roll_right = 0.0f;
 
     while (1) {
-        // Safely read the global parameter values for both motors
+        // 读取电机参数
         if (xSemaphoreTake(motor_params_mutex, portMAX_DELAY) == pdTRUE) {
             current_motor_1 = global_motor_1;
             current_motor_2 = global_motor_2;
             xSemaphoreGive(motor_params_mutex);
         } else {
-            // ESP_LOGW(TAG, "Failed to take motor_params_mutex, using default parameters.");  // 运行时日志已禁用
-            // Fallback to default values if mutex acquisition fails
-            current_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
-            current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}; // FOC模式
+            current_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         }
 
-        // 获取蓝牙IMU数据（在循环开始处获取，供后续speed_follow.update()使用）
+        // 获取蓝牙IMU数据
 #ifdef ENABLE_BT_IMU
         bt_imu_data_t imu_data_left, imu_data_right;
-        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);   // 设备0: 左 00:0c:bf:16:0a:37
-        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right); // 设备1: 右 00:0c:bf:06:74:4f
-
-        // 仅在数据有效时更新roll值，并保留2位小数以减少浮点精度误差
+        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);
+        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right);
         if (imu_left_valid) {
             roll_left = roundf(imu_data_left.roll * 100.0f) / 100.0f;
         }
         if (imu_right_valid) {
             roll_right = roundf(imu_data_right.roll * 100.0f) / 100.0f;
         }
-
-        // // 更新IMU滑动窗口数据
-        // speed_follow.updateRollValue(roll_left, roll_right, imu_left_valid, imu_right_valid);
 #else
-        // 蓝牙IMU功能已禁用，使用默认值
         bool imu_left_valid = false;
         bool imu_right_valid = false;
 #endif
 
-        // 控制电机1 - FOC模式，通过MIT参数控制
-        MotorCmdA1 control_cmd_1;
-        control_cmd_1.id = current_motor_1.motor_id;
-        control_cmd_1.mode = current_motor_1.motor_mode;  // FOC模式(1)
-        control_cmd_1.pos = current_motor_1.motor_pos;    // MIT参数
-        control_cmd_1.vel = current_motor_1.motor_vel;    // MIT参数
-        control_cmd_1.t = current_motor_1.motor_t;        // MIT参数
-        control_cmd_1.kp = current_motor_1.motor_kp;      // MIT参数
-        control_cmd_1.kd = current_motor_1.motor_kd;      // MIT参数
+        // 控制电机1
+        MotorCmdA1 cmd1;
+        cmd1.id = current_motor_1.motor_id;
+        cmd1.mode = current_motor_1.motor_mode;
+        cmd1.pos = current_motor_1.motor_pos;
+        cmd1.vel = current_motor_1.motor_vel;
+        cmd1.t = current_motor_1.motor_t;
+        cmd1.kp = current_motor_1.motor_kp;
+        cmd1.kd = current_motor_1.motor_kd;
 
-        esp_err_t err1 = motor_driver.sendRecv(control_cmd_1, motor_data_1);
+        esp_err_t err1 = motor_driver.sendRecv(cmd1, motor_data_1);
         if (err1 == ESP_OK) {
-            // 添加位置数据到缓存区
-            uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
+            uint32_t timestamp = esp_timer_get_time() / 1000;
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
 
-         vTaskDelay(pdMS_TO_TICKS(1));
-        // 控制电机2 - FOC模式，通过MIT参数控制
-        MotorCmdA1 control_cmd_2;
-        control_cmd_2.id = current_motor_2.motor_id;
-        control_cmd_2.mode = current_motor_2.motor_mode;  // FOC模式(1)
-        control_cmd_2.pos = current_motor_2.motor_pos;    // MIT参数
-        control_cmd_2.vel = current_motor_2.motor_vel;    // MIT参数
-        control_cmd_2.t = current_motor_2.motor_t;        // MIT参数
-        control_cmd_2.kp = current_motor_2.motor_kp;      // MIT参数
-        control_cmd_2.kd = current_motor_2.motor_kd;      // MIT参数
+        vTaskDelay(pdMS_TO_TICKS(1));
 
-        esp_err_t err2 = motor_driver.sendRecv(control_cmd_2, motor_data_2);
+        // 控制电机2
+        MotorCmdA1 cmd2;
+        cmd2.id = current_motor_2.motor_id;
+        cmd2.mode = current_motor_2.motor_mode;
+        cmd2.pos = current_motor_2.motor_pos;
+        cmd2.vel = current_motor_2.motor_vel;
+        cmd2.t = current_motor_2.motor_t;
+        cmd2.kp = current_motor_2.motor_kp;
+        cmd2.kd = current_motor_2.motor_kd;
+
+        esp_err_t err2 = motor_driver.sendRecv(cmd2, motor_data_2);
         if (err2 == ESP_OK) {
-            // 添加位置数据到缓存区
-            uint32_t timestamp = esp_timer_get_time() / 1000; // 转换为毫秒
+            uint32_t timestamp = esp_timer_get_time() / 1000;
             position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
         }
 
-        // 合并打印两个电机的数据：电机1(ch0,ch1,ch2) + 电机2(ch3,ch4,ch5) + 波峰波谷差值最大值(ch6,ch7)
+        // 波形分析与速度跟随
         if (err1 == ESP_OK && err2 == ESP_OK) {
-            // 分析波形并获取差值
             wave_analysis_result_t motor1_wave, motor2_wave;
             float motor1_diff = 0.0f, motor2_diff = 0.0f;
             uint32_t timestamp = esp_timer_get_time() / 1000;
 
             if (position_buffer_analyze_motor1_wave(&position_buffers, &motor1_wave)) {
                 motor1_diff = motor1_wave.peak_valley_diff;
-                // 将ch6差值存入缓存区
                 diff_buffer_add_ch6(&position_buffers, motor1_diff, timestamp);
             }
-
             if (position_buffer_analyze_motor2_wave(&position_buffers, &motor2_wave)) {
                 motor2_diff = motor2_wave.peak_valley_diff;
-                // 将ch7差值存入缓存区
                 diff_buffer_add_ch7(&position_buffers, motor2_diff, timestamp);
             }
 
-            // 获取ch6和ch7缓存区的最大值
             ch6_max = diff_buffer_get_ch6_max(&position_buffers);
             ch7_max = diff_buffer_get_ch7_max(&position_buffers);
 
-            // ==================== AI推理部分 ====================
-            // // 使用滑动窗口：将所有数据向前移动一位，保持时间顺序
-            // for (int i = 0; i < AI_WINDOW_SIZE - 1; i++) {
-            //     m1_velocity_window[i] = m1_velocity_window[i + 1];
-            //     m2_velocity_window[i] = m2_velocity_window[i + 1];
-            // }
-            // // 最新数据放在窗口末尾
-            // m1_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_1.vel;
-            // m2_velocity_window[AI_WINDOW_SIZE - 1] = motor_data_2.vel;
-
-            // ai_window_index++;
-
-            // // 当窗口填满50个点后，每次都运行AI推理
-            // if (ai_window_index >= AI_WINDOW_SIZE) {
-            //     // 只有在AI模型就绪时才推理
-            //     if (ai_model_ready) {
-            //         // 双腿联合推理 (仅速度)
-            //         ai_inference_result_t result;
-            //         if (ai_run_inference(m1_velocity_window, m2_velocity_window, &result)) {
-            //             // 从单次推理结果中获取两腿的阶段预测
-            //             m1_predicted_phase = result.m1_phase;
-            //             m2_predicted_phase = result.m2_phase;
-
-            //             // 注入AI推理结果到速度跟随模块（用于AI模式判断）
-            //             speed_follow.updateAIPhase(result.m1_phase, result.m2_phase);
-            //         }
-            //     }
-            // }
-
-            // 使用AI推理结果作为标签输出（AI功能已禁用，标签固定为0）
-            m1_ai_label = 0.0f;  // m1的AI预测阶段 (AI已禁用)
-            m2_ai_label = 0.0f;  // m2的AI预测阶段 (AI已禁用)
-            // ==================== AI推理部分结束 ====================
-
-            // 检查阈值并可能激活速度跟随模式
             speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
-
-            // 使用 ch6_max 和 ch7_max 更新速度跟随模式
             speed_follow.update(motor_data_1, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
             speed_follow.update(motor_data_2, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
         }
 
-        // // 打印数据（电机通信失败时，motor_data会使用上一次的值或初始值）
-        // printf("motors:%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-        //        motor_data_1.pos, motor_data_1.vel, motor_data_1.t,
-        //        motor_data_2.pos, motor_data_2.vel, motor_data_2.t,
-        //        ch6_max, ch7_max, m1_ai_label, m2_ai_label,
-        //        roll_left, roll_right);
-
-        // 计算实际采样率（每500次计算一次）
+        // 计算采样间隔
         static int64_t hz_start_time = 0;
         static int hz_count = 0;
         if (hz_count == 0) {
             hz_start_time = esp_timer_get_time();
         }
-        hz_count++;
-        if (hz_count >= 500) {
+        if (++hz_count >= 100) {
             int64_t elapsed_us = esp_timer_get_time() - hz_start_time;
-            float actual_hz = 500.0f * 1000000.0f / (float)elapsed_us;
-            //printf("实际采样率: %.1f Hz (500次耗时 %.1f ms)\n", actual_hz, elapsed_us / 1000.0f);
+            uint8_t interval_ms = (uint8_t)(elapsed_us / 100000);
+            if (interval_ms < 1) interval_ms = 1;
+            tcp_data_set_interval(interval_ms);
             hz_count = 0;
         }
 
-        // TCP数据上传 - 添加数据到发送缓冲区
+        // TCP数据上传
         motor_data_record_t record = {
             .timestamp_ms = (int64_t)get_beijing_timestamp_ms(),
             .motor1_pos = motor_data_1.pos,
@@ -594,134 +198,70 @@ void motor_control_task(void *pvParameters) {
             .motor2_pos = motor_data_2.pos,
             .motor2_vel = motor_data_2.vel,
             .motor2_torque = motor_data_2.t,
-            .roll_left = imu_left_valid ? roll_left : NAN,    // 未连接时用NAN标记
-            .roll_right = imu_right_valid ? roll_right : NAN, // 未连接时用NAN标记
+            .roll_left = imu_left_valid ? roll_left : NAN,
+            .roll_right = imu_right_valid ? roll_right : NAN,
             .m1_state_label = (int8_t)speed_follow.getCurrentM1Phase(),
             .m2_state_label = (int8_t)speed_follow.getCurrentM2Phase()
         };
         tcp_data_add_record(&record);
 
         loop_count++;
-
-        // 实际运行控制: 1+3+4实际运行任务  8ms效果最好 
-         vTaskDelay(pdMS_TO_TICKS(3));
+        vTaskDelay(pdMS_TO_TICKS(3));
     }
 }
 
 /**
- * @brief 应用程序主入口函数
- * @details 初始化顺序：
- *          1. 语音模块初始化
- *          2. 创建电机参数互斥锁
- *          3. WiFi热点初始化（AP模式）
- *          4. Web服务器启动
- *          5. 注册Web回调函数
- *          6. 电机驱动初始化（UART2, 4Mbps）
- *          7. 按键检测器初始化
- *          8. 创建按键检测任务和电机控制任务
+ * @brief 应用程序主入口
  */
 extern "C" void app_main() {
-    // ESP_LOGI(TAG, "ESP32 Unitree 电机驱动示例启动");  // 运行时日志已禁用
-
     // 初始化语音模块
     voice_module_init(&voice_module);
-    //voice_speak(&voice_module, "系统启动成功");
 
-    // ==================== 初始化AI模型 ====================
-    // ESP_LOGI(TAG, "正在初始化AI推理模型...");
-    // if (ai_model_init()) {
-    //     ai_model_ready = true;
-    //     ESP_LOGI(TAG, "✓ AI模型初始化成功");
-
-    //     // 获取并打印模型信息
-    //     uint32_t model_size, arena_used;
-    //     ai_get_model_info(&model_size, &arena_used);
-    //     ESP_LOGI(TAG, "  模型大小: %lu bytes", model_size);
-    //     ESP_LOGI(TAG, "  内存使用: %lu bytes", arena_used);
-
-    //     //voice_speak(&voice_module, "AI模型已就绪");
-    // } else {
-    //     ai_model_ready = false;
-    //     ESP_LOGW(TAG, "⚠ AI模型初始化失败，将使用默认标签");
-    //     //voice_speak(&voice_module, "AI模型加载失败");
-    // }
-    // ==================== AI模型初始化结束 ====================
-
-    // ==================== 初始化蓝牙IMU模块 ====================
+    // 初始化蓝牙IMU
 #ifdef ENABLE_BT_IMU
-    // ESP_LOGI(TAG, "正在初始化蓝牙IMU模块...");  // 运行时日志已禁用
-    if (bt_imu_init_multi() == 0) {
-        // ESP_LOGI(TAG, "✓ 蓝牙IMU模块初始化成功");  // 运行时日志已禁用
-    } else {
-        // ESP_LOGE(TAG, "✗ 蓝牙IMU模块初始化失败");  // 运行时日志已禁用
-    }
-#else
-    // ESP_LOGI(TAG, "蓝牙IMU功能已禁用 (ENABLE_BT_IMU 未定义)");  // 运行时日志已禁用
+    bt_imu_init_multi();
 #endif
-    // ==================== 蓝牙IMU模块初始化结束 ====================
 
-    // 为电机参数创建互斥锁
+    // 创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();
     if (motor_params_mutex == NULL) {
-        // ESP_LOGE(TAG, "Failed to create motor_params_mutex!");  // 运行时日志已禁用
         return;
     }
 
-    // 在后台任务中初始化WiFi和TCP数据上传，不阻塞主程序
-    // 电机控制任务立即创建，不受WiFi连接状态影响
+    // 后台初始化WiFi和TCP
     wifi_tcp_init_background();
 
-    // 注释掉原来的AP模式和Web服务器
-    // // 初始化WiFi热点
-    // ESP_LOGI(TAG, "正在初始化WiFi热点...");
-    // if (wifi_init_softap() != ESP_OK) {
-    //     ESP_LOGE(TAG, "WiFi热点初始化失败！");
-    //     return;
-    // }
+    // 配置4G模块复位引脚 (GPIO10) - 高电平正常工作，拉低复位
+    gpio_config_t io_conf_4g = {
+        .pin_bit_mask = (1ULL << GPIO_4G_RESET),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&io_conf_4g);
+    gpio_set_level(GPIO_4G_RESET, 1);  // 保持高电平，4G模块正常工作
 
-    // // 启动Web服务器
-    // ESP_LOGI(TAG, "正在启动Web服务器...");
-    // web_server = start_webserver();
-    // if (web_server == NULL) {
-    //     ESP_LOGE(TAG, "Web服务器启动失败！");
-    //     return;
-    // }
-
-    // // 注册Web服务器回调函数
-    // register_command_handler(handle_web_command);
-    // register_param_handler(handle_web_param);
-    // register_motor_param_handler(handle_web_motor_param);
-    // register_motor_param_getter(handle_web_get_motor_param);
-    // register_state_getter(handle_web_get_state);
-    // ESP_LOGI(TAG, "Web服务器已启动，请连接WiFi: ESP32_Motor_Control, 访问: http://192.168.4.1");
-
-    // 配置MAX485 DE/RE引脚为输出并拉高，进入自动流控模式
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << MAX485_RE_DE_PIN);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    // 配置MAX485 DE/RE引脚
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << MAX485_RE_DE_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
     gpio_config(&io_conf);
-    gpio_set_level(MAX485_RE_DE_PIN, 1);  // 拉高DE/RE引脚
-    // ESP_LOGI(TAG, "MAX485 DE/RE引脚已配置为高电平(自动流控模式)");  // 运行时日志已禁用
+    gpio_set_level(MAX485_RE_DE_PIN, 1);
 
     // 初始化电机驱动
-    if (motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
-        // ESP_LOGI(TAG, "电机驱动初始化成功 - 纯串口同步模式");  // 运行时日志已禁用
-    } else {
-        // ESP_LOGE(TAG, "电机驱动初始化失败！");  // 运行时日志已禁用
+    if (!motor_driver.init(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, GPIO_NUM_NC, UART_BAUD_RATE)) {
         return;
     }
 
-    // 初始化按键检测器
-    // ESP_LOGI(TAG, "正在初始化按键检测器...");  // 运行时日志已禁用
+    // 初始化按键检测
     button_detector_init();
 
-    // 创建按键检测任务
-    xTaskCreate(button_detector_task, "button_detector_task", 4096, NULL, 4, NULL);
-    // ESP_LOGI(TAG, "按键检测任务已创建");  // 运行时日志已禁用
-
-    // 创建电机控制任务
-    xTaskCreate(motor_control_task, "motor_control_task", 4096, NULL, 5, NULL);
+    // 创建任务
+    xTaskCreate(button_detector_task, "button_task", 4096, NULL, 4, NULL);
+    xTaskCreate(motor_control_task, "motor_task", 4096, NULL, 5, NULL);
 }

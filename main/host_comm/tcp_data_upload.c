@@ -5,7 +5,6 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
-#include "esp_sntp.h"
 #include "nvs_flash.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -14,13 +13,17 @@
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "esp_rom_uart.h"
+#include "driver/uart.h"
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
 #include <math.h>
 #include <stdio.h>
 
-static const char *TAG = "TCP_UPLOAD";
+/* 串口透传波特率配置 */
+#define SERIAL_PASSTHROUGH_BAUDRATE 921600
+
+// static const char *TAG = "TCP_UPLOAD";  // 运行时日志已禁用，TAG未使用
 
 /* WiFi事件标志 */
 #define WIFI_CONNECTED_BIT  BIT0
@@ -47,6 +50,11 @@ static esp_ip4_addr_t s_gateway_ip = {0};  /* 网关IP（手机热点地址） *
 static bool s_serial_initialized = false;
 static uint32_t s_serial_packets_sent = 0;
 static uint32_t s_serial_bytes_sent = 0;
+
+/* 串口时间同步状态 */
+static volatile bool s_serial_ntp_synced = false;     /* 是否已通过串口同步时间 */
+// static uint8_t s_serial_rx_buffer[64];                /* 串口接收缓冲区 - 未使用 */
+// static volatile int s_serial_rx_len = 0;              /* 接收缓冲区数据长度 - 未使用 */
 #endif
 
 /* 数据缓冲区 - 多缓冲（每个缓冲区存200ms数据，共5个=1秒缓存） */
@@ -65,18 +73,24 @@ static uint32_t s_packets_failed = 0;
 static uint32_t s_bytes_sent = 0;
 static uint16_t s_seq_number = 0;
 
-/* NTP时间同步状态 */
+/* 时间同步状态 */
 static volatile bool s_time_synced = false;
-static volatile bool s_sntp_initialized = false;  /* SNTP是否已初始化 */
 
-/* 日志频率控制 (5秒间隔) */
-#define LOG_INTERVAL_MS 5000
-static int64_t s_last_wifi_log_time = 0;
-static int64_t s_last_tcp_log_time = 0;
-static int64_t s_last_buffer_log_time = 0;
+/* TCP对时协议定义（与串口透传相同） */
+#define TIME_SYNC_REQUEST_BYTE1   0xAA
+#define TIME_SYNC_REQUEST_BYTE2   0xCC
+#define TIME_SYNC_RESPONSE_BYTE1  0xCC
+#define TIME_SYNC_RESPONSE_BYTE2  0xAA
+#define TIME_SYNC_CONFIRM_BYTE1   0xBB
+#define TIME_SYNC_CONFIRM_BYTE2   0xBB
+#define TIME_SYNC_RESPONSE_SIZE   10    /* CC AA + 8字节时间戳 */
 
 /* 前向声明 */
-static void ensure_ntp_running(void);
+static void clear_data_buffers(void);
+static esp_err_t tcp_time_sync(void);
+#if SERIAL_PASSTHROUGH_ENABLE
+/* 串口透传前向声明 */
+#endif
 
 /* WiFi事件处理 - 仅设置标志，不阻塞 */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -86,7 +100,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_tcp_connected = false;
-        s_time_synced = false;  /* WiFi断开时标记时间未同步 */
         s_retry_num++;
         /* 频率控制：每5秒打印一次（已禁用以减少串口输出） */
         // int64_t now = esp_timer_get_time() / 1000;
@@ -98,6 +111,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         // ESP_LOGI(TAG, "获取到IP地址: " IPSTR, IP2STR(&event->ip_info.ip));  // 运行时日志已禁用
+        (void)event;  /* 避免未使用警告 */
 #if TCP_ENABLE_LAN_UPLOAD
         /* 保存网关地址（手机热点的IP） */
         s_gateway_ip = event->ip_info.gw;
@@ -105,8 +119,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 #endif
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        /* 网络连接后确保NTP运行 */
-        ensure_ntp_running();
     }
 }
 
@@ -181,54 +193,89 @@ esp_err_t wifi_init_sta(void)
     return ESP_ERR_TIMEOUT;
 }
 
-/* NTP时间同步回调 */
-static void time_sync_notification_cb(struct timeval *tv)
+/**
+ * @brief 应用服务器时间到系统时钟（公用函数）
+ * @param server_time_ms 服务器时间戳（毫秒）
+ * @return true 成功, false 时间戳无效
+ */
+static bool apply_server_time(int64_t server_time_ms)
 {
-    s_time_synced = true;
+    /* 验证服务器时间戳有效性（2020年~2100年范围内） */
+    const int64_t MIN_VALID_TIME_MS = 1577836800000LL;  /* 2020-01-01 */
+    const int64_t MAX_VALID_TIME_MS = 4102444800000LL;  /* 2100-01-01 */
+    if (server_time_ms < MIN_VALID_TIME_MS || server_time_ms > MAX_VALID_TIME_MS) {
+        return false;
+    }
 
-    time_t now = tv->tv_sec;
-    struct tm timeinfo;
-    localtime_r(&now, &timeinfo);
-
-    // ESP_LOGI(TAG, "NTP时间同步成功: %04d-%02d-%02d %02d:%02d:%02d (北京时间)",
-    //          timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-    //          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);  // 运行时日志已禁用
-}
-
-void ntp_time_sync_init(void)
-{
-    // ESP_LOGI(TAG, "初始化SNTP时间同步...");  // 运行时日志已禁用
-
-    /* 设置时区为北京时间 (UTC+8) */
+    /* 设置时区 */
     setenv("TZ", BEIJING_TIMEZONE, 1);
     tzset();
 
-    /* 配置SNTP */
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, NTP_SERVER_1);
-    esp_sntp_setservername(1, NTP_SERVER_2);
-    esp_sntp_setservername(2, NTP_SERVER_3);
-    esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
-    esp_sntp_init();
+    /* 设置系统时钟 */
+    struct timeval tv;
+    tv.tv_sec = server_time_ms / 1000;
+    tv.tv_usec = (server_time_ms % 1000) * 1000;
+    settimeofday(&tv, NULL);
 
-    s_sntp_initialized = true;
-    // ESP_LOGI(TAG, "SNTP已启动，等待时间同步...");  // 运行时日志已禁用
+    /* 设置时间同步标志 */
+    s_time_synced = true;
+    return true;
 }
 
 /**
- * @brief 确保NTP服务正在运行（用于WiFi重连后）
- * @note 如果SNTP未初始化则初始化，如果已初始化则重启同步
+ * @brief TCP三次握手对时（通过公网TCP连接）
+ * @return ESP_OK 成功, ESP_FAIL 失败
+ * @note 对时流程:
+ *   1. 设备发送 AA CC (对时请求)
+ *   2. 服务端回复 CC AA + 8字节时间戳 (对时响应)
+ *   3. 设备发送 BB BB (对时确认)
  */
-static void ensure_ntp_running(void)
+static esp_err_t tcp_time_sync(void)
 {
-    if (!s_sntp_initialized) {
-        /* 首次初始化 */
-        ntp_time_sync_init();
-    } else {
-        /* 已初始化，重启SNTP以触发重新同步 */
-        // ESP_LOGI(TAG, "WiFi重连，重启NTP时间同步...");  // 运行时日志已禁用
-        esp_sntp_restart();
+    if (!s_tcp_connected || s_tcp_socket < 0) {
+        return ESP_FAIL;
     }
+
+    /* 第一步: 发送对时请求 AA CC */
+    uint8_t request_packet[2] = {TIME_SYNC_REQUEST_BYTE1, TIME_SYNC_REQUEST_BYTE2};
+    int sent = send(s_tcp_socket, request_packet, 2, 0);
+    if (sent != 2) {
+        return ESP_FAIL;
+    }
+
+    /* 第二步: 等待服务端响应 CC AA + 时间戳，最多等待500ms */
+    uint8_t rx_buf[16];
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 500000;  /* 500ms */
+    setsockopt(s_tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    int read_len = recv(s_tcp_socket, rx_buf, sizeof(rx_buf), 0);
+    if (read_len >= TIME_SYNC_RESPONSE_SIZE) {
+        /* 查找 CC AA + 时间戳 响应 */
+        for (int i = 0; i <= read_len - TIME_SYNC_RESPONSE_SIZE; i++) {
+            if (rx_buf[i] == TIME_SYNC_RESPONSE_BYTE1 && rx_buf[i+1] == TIME_SYNC_RESPONSE_BYTE2) {
+                /* 解析8字节时间戳（小端序） */
+                int64_t server_time_ms = (int64_t)rx_buf[i+2] |
+                                          ((int64_t)rx_buf[i+3] << 8) |
+                                          ((int64_t)rx_buf[i+4] << 16) |
+                                          ((int64_t)rx_buf[i+5] << 24) |
+                                          ((int64_t)rx_buf[i+6] << 32) |
+                                          ((int64_t)rx_buf[i+7] << 40) |
+                                          ((int64_t)rx_buf[i+8] << 48) |
+                                          ((int64_t)rx_buf[i+9] << 56);
+
+                /* 第三步: 收到对时响应，应用时间并回复 BB BB 确认 */
+                if (apply_server_time(server_time_ms)) {
+                    uint8_t confirm_packet[2] = {TIME_SYNC_CONFIRM_BYTE1, TIME_SYNC_CONFIRM_BYTE2};
+                    send(s_tcp_socket, confirm_packet, 2, 0);
+                    return ESP_OK;
+                }
+            }
+        }
+    }
+
+    return ESP_FAIL;
 }
 
 uint64_t get_beijing_timestamp_ms(void)
@@ -299,7 +346,7 @@ static esp_err_t tcp_connect_to_server(void)
 {
     struct hostent *hp;
     struct sockaddr_in server_addr;
-    int64_t now = esp_timer_get_time() / 1000;
+    // int64_t now = esp_timer_get_time() / 1000;  // 日志已禁用，变量未使用
 
     /* 关闭旧连接 */
     if (s_tcp_socket >= 0) {
@@ -367,7 +414,7 @@ static esp_err_t tcp_connect_to_server(void)
 static esp_err_t tcp_connect_to_lan_server(void)
 {
     struct sockaddr_in server_addr;
-    int64_t now = esp_timer_get_time() / 1000;
+    // int64_t now = esp_timer_get_time() / 1000;  // 日志已禁用，变量未使用
 
     /* 检查网关地址是否有效 */
     if (s_gateway_ip.addr == 0) {
@@ -425,37 +472,186 @@ static esp_err_t tcp_connect_to_lan_server(void)
 }
 #endif
 
-/* 发送数据包 - 使用静态缓冲区避免栈溢出 */
-static tcp_data_packet_t s_send_packet;  /* 静态发送缓冲区 */
+/* CRC8查表法（多项式0x07，初始值0x00） */
+static const uint8_t crc8_table[256] = {
+    0x00, 0x07, 0x0E, 0x09, 0x1C, 0x1B, 0x12, 0x15,
+    0x38, 0x3F, 0x36, 0x31, 0x24, 0x23, 0x2A, 0x2D,
+    0x70, 0x77, 0x7E, 0x79, 0x6C, 0x6B, 0x62, 0x65,
+    0x48, 0x4F, 0x46, 0x41, 0x54, 0x53, 0x5A, 0x5D,
+    0xE0, 0xE7, 0xEE, 0xE9, 0xFC, 0xFB, 0xF2, 0xF5,
+    0xD8, 0xDF, 0xD6, 0xD1, 0xC4, 0xC3, 0xCA, 0xCD,
+    0x90, 0x97, 0x9E, 0x99, 0x8C, 0x8B, 0x82, 0x85,
+    0xA8, 0xAF, 0xA6, 0xA1, 0xB4, 0xB3, 0xBA, 0xBD,
+    0xC7, 0xC0, 0xC9, 0xCE, 0xDB, 0xDC, 0xD5, 0xD2,
+    0xFF, 0xF8, 0xF1, 0xF6, 0xE3, 0xE4, 0xED, 0xEA,
+    0xB7, 0xB0, 0xB9, 0xBE, 0xAB, 0xAC, 0xA5, 0xA2,
+    0x8F, 0x88, 0x81, 0x86, 0x93, 0x94, 0x9D, 0x9A,
+    0x27, 0x20, 0x29, 0x2E, 0x3B, 0x3C, 0x35, 0x32,
+    0x1F, 0x18, 0x11, 0x16, 0x03, 0x04, 0x0D, 0x0A,
+    0x57, 0x50, 0x59, 0x5E, 0x4B, 0x4C, 0x45, 0x42,
+    0x6F, 0x68, 0x61, 0x66, 0x73, 0x74, 0x7D, 0x7A,
+    0x89, 0x8E, 0x87, 0x80, 0x95, 0x92, 0x9B, 0x9C,
+    0xB1, 0xB6, 0xBF, 0xB8, 0xAD, 0xAA, 0xA3, 0xA4,
+    0xF9, 0xFE, 0xF7, 0xF0, 0xE5, 0xE2, 0xEB, 0xEC,
+    0xC1, 0xC6, 0xCF, 0xC8, 0xDD, 0xDA, 0xD3, 0xD4,
+    0x69, 0x6E, 0x67, 0x60, 0x75, 0x72, 0x7B, 0x7C,
+    0x51, 0x56, 0x5F, 0x58, 0x4D, 0x4A, 0x43, 0x44,
+    0x19, 0x1E, 0x17, 0x10, 0x05, 0x02, 0x0B, 0x0C,
+    0x21, 0x26, 0x2F, 0x28, 0x3D, 0x3A, 0x33, 0x34,
+    0x4E, 0x49, 0x40, 0x47, 0x52, 0x55, 0x5C, 0x5B,
+    0x76, 0x71, 0x78, 0x7F, 0x6A, 0x6D, 0x64, 0x63,
+    0x3E, 0x39, 0x30, 0x37, 0x22, 0x25, 0x2C, 0x2B,
+    0x06, 0x01, 0x08, 0x0F, 0x1A, 0x1D, 0x14, 0x13,
+    0xAE, 0xA9, 0xA0, 0xA7, 0xB2, 0xB5, 0xBC, 0xBB,
+    0x96, 0x91, 0x98, 0x9F, 0x8A, 0x8D, 0x84, 0x83,
+    0xDE, 0xD9, 0xD0, 0xD7, 0xC2, 0xC5, 0xCC, 0xCB,
+    0xE6, 0xE1, 0xE8, 0xEF, 0xFA, 0xFD, 0xF4, 0xF3
+};
 
-/* 填充发送数据包（公网和局域网共用） */
+/**
+ * @brief 计算CRC8校验值
+ * @param data 数据指针
+ * @param len 数据长度
+ * @return CRC8校验值
+ */
+static uint8_t calc_crc8(const uint8_t *data, size_t len)
+{
+    uint8_t crc = 0x00;
+    for (size_t i = 0; i < len; i++) {
+        crc = crc8_table[crc ^ data[i]];
+    }
+    return crc;
+}
+
+/* 发送数据包 - 协议v10: 使用静态缓冲区，支持每条数据精确时间偏移和可选roll */
+static tcp_packet_header_t s_packet_header;  /* 包头缓冲区 */
+static uint8_t s_send_buffer[TCP_PACKET_SIZE_WITH_ROLL];  /* 完整发送缓冲区 */
+static size_t s_actual_packet_size = 0;  /* 实际发送的包大小 */
+
+/* 采样间隔（由外部设置，默认5ms） */
+static volatile uint8_t s_sample_interval_ms = 5;
+
+/**
+ * @brief 设置采样间隔（供main.cpp调用）
+ */
+void tcp_data_set_interval(uint8_t interval_ms)
+{
+    s_sample_interval_ms = interval_ms;
+}
+
+/* 填充发送数据包（公网和局域网共用） - 协议v10: 每条数据带真实时间偏移 */
 static void fill_send_packet(void)
 {
-    s_send_packet.magic = 0xAA55;
-    s_send_packet.device_id = DEVICE_ID;
-    s_send_packet.version = 6;  /* 协议版本6: 添加蓝牙IMU roll数据 */
-    s_send_packet.seq = s_seq_number++;
-    s_send_packet.count = TCP_SAMPLES_PER_PACKET;
-
-    /* 从发送缓冲区复制数据到包中，float转int16 (×100) */
     motor_data_record_t *send_buf = s_buffers[s_send_buf_idx];
+
+    /* 检查是否有有效的roll数据（任意一条数据的roll非NAN即有roll） */
+    bool has_roll = false;
     for (int i = 0; i < TCP_SAMPLES_PER_PACKET; i++) {
-        s_send_packet.samples[i].timestamp_ms = send_buf[i].timestamp_ms;
-        /* 电机数据 ×100 转int16，精度0.01 */
-        s_send_packet.samples[i].channels[0] = (int16_t)(send_buf[i].motor1_pos * 100.0f);
-        s_send_packet.samples[i].channels[1] = (int16_t)(send_buf[i].motor1_vel * 100.0f);
-        s_send_packet.samples[i].channels[2] = (int16_t)(send_buf[i].motor1_torque * 100.0f);
-        s_send_packet.samples[i].channels[3] = (int16_t)(send_buf[i].motor2_pos * 100.0f);
-        s_send_packet.samples[i].channels[4] = (int16_t)(send_buf[i].motor2_vel * 100.0f);
-        s_send_packet.samples[i].channels[5] = (int16_t)(send_buf[i].motor2_torque * 100.0f);
-        /* 蓝牙IMU roll数据: NAN表示未连接，用0x7FFF标记 */
-        s_send_packet.samples[i].roll_left = isnan(send_buf[i].roll_left) ?
-            BT_IMU_NOT_CONNECTED : (int16_t)(send_buf[i].roll_left * 100.0f);
-        s_send_packet.samples[i].roll_right = isnan(send_buf[i].roll_right) ?
-            BT_IMU_NOT_CONNECTED : (int16_t)(send_buf[i].roll_right * 100.0f);
-        s_send_packet.samples[i].m1_state = send_buf[i].m1_state_label;
-        s_send_packet.samples[i].m2_state = send_buf[i].m2_state_label;
+        if (!isnan(send_buf[i].roll_left) || !isnan(send_buf[i].roll_right)) {
+            has_roll = true;
+            break;
+        }
     }
+
+    /* 设置flags: bit0=sync, bit1=has_roll */
+    uint8_t flags = 0;
+    /* 只要任一同步方式成功即可（WiFi TCP或串口透传） */
+    if (s_time_synced) flags |= FLAG_SYNC;
+#if SERIAL_PASSTHROUGH_ENABLE
+    if (s_serial_ntp_synced) flags |= FLAG_SYNC;
+#endif
+    if (has_roll) flags |= FLAG_HAS_ROLL;
+
+    /* 获取基准时间戳（第一条数据的时间，48bit毫秒） */
+    int64_t base_time_ms = send_buf[0].timestamp_ms;
+
+    /* 填充包头 */
+    s_packet_header.magic = 0xAA55;
+    s_packet_header.device_id = DEVICE_ID;
+    s_packet_header.version = 10;  /* 协议版本10: 精确时间戳版 */
+    s_packet_header.seq = (uint8_t)(s_seq_number++ & 0xFF);  /* 0-255循环 */
+    s_packet_header.flags = flags;
+    s_packet_header.interval_ms = s_sample_interval_ms;
+    s_packet_header.reserved = 0;
+    s_packet_header.base_time[0] = (uint8_t)(base_time_ms & 0xFF);
+    s_packet_header.base_time[1] = (uint8_t)((base_time_ms >> 8) & 0xFF);
+    s_packet_header.base_time[2] = (uint8_t)((base_time_ms >> 16) & 0xFF);
+    s_packet_header.base_time[3] = (uint8_t)((base_time_ms >> 24) & 0xFF);
+    s_packet_header.base_time[4] = (uint8_t)((base_time_ms >> 32) & 0xFF);
+    s_packet_header.base_time[5] = (uint8_t)((base_time_ms >> 40) & 0xFF);
+
+    /* 复制包头到发送缓冲区 */
+    size_t offset = 0;
+    memcpy(s_send_buffer, &s_packet_header, sizeof(tcp_packet_header_t));
+    offset = sizeof(tcp_packet_header_t);
+
+    /* 填充采样数据 */
+    if (has_roll) {
+        /* 带roll数据: 每条19字节 */
+        for (int i = 0; i < TCP_SAMPLES_PER_PACKET; i++) {
+            tcp_sample_with_roll_t sample;
+
+            /* 计算相对于第一条数据的时间偏移（毫秒） */
+            int64_t time_diff = send_buf[i].timestamp_ms - base_time_ms;
+            if (time_diff < 0) time_diff = 0;
+            if (time_diff > 65535) time_diff = 65535;
+            sample.time_offset_ms = (uint16_t)time_diff;
+
+            /* 电机数据 ×100 转int16，精度0.01 */
+            sample.pos1 = (int16_t)(send_buf[i].motor1_pos * 100.0f);
+            sample.pos2 = (int16_t)(send_buf[i].motor2_pos * 100.0f);
+            sample.vel1 = (int16_t)(send_buf[i].motor1_vel * 100.0f);
+            sample.vel2 = (int16_t)(send_buf[i].motor2_vel * 100.0f);
+            sample.torque1 = (int16_t)(send_buf[i].motor1_torque * 100.0f);
+            sample.torque2 = (int16_t)(send_buf[i].motor2_torque * 100.0f);
+
+            /* roll数据: NAN表示未连接，用特殊值标记 */
+            sample.roll_left = isnan(send_buf[i].roll_left) ?
+                BT_IMU_NOT_CONNECTED : (int16_t)(send_buf[i].roll_left * 100.0f);
+            sample.roll_right = isnan(send_buf[i].roll_right) ?
+                BT_IMU_NOT_CONNECTED : (int16_t)(send_buf[i].roll_right * 100.0f);
+
+            /* 状态标签合并: 高4位m1_state, 低4位m2_state */
+            sample.states = ((send_buf[i].m1_state_label & 0x0F) << 4) |
+                            (send_buf[i].m2_state_label & 0x0F);
+
+            memcpy(s_send_buffer + offset, &sample, sizeof(tcp_sample_with_roll_t));
+            offset += sizeof(tcp_sample_with_roll_t);
+        }
+    } else {
+        /* 不带roll数据: 每条15字节 */
+        for (int i = 0; i < TCP_SAMPLES_PER_PACKET; i++) {
+            tcp_sample_t sample;
+
+            /* 计算相对于第一条数据的时间偏移（毫秒） */
+            int64_t time_diff = send_buf[i].timestamp_ms - base_time_ms;
+            if (time_diff < 0) time_diff = 0;
+            if (time_diff > 65535) time_diff = 65535;
+            sample.time_offset_ms = (uint16_t)time_diff;
+
+            /* 电机数据 ×100 转int16，精度0.01 */
+            sample.pos1 = (int16_t)(send_buf[i].motor1_pos * 100.0f);
+            sample.pos2 = (int16_t)(send_buf[i].motor2_pos * 100.0f);
+            sample.vel1 = (int16_t)(send_buf[i].motor1_vel * 100.0f);
+            sample.vel2 = (int16_t)(send_buf[i].motor2_vel * 100.0f);
+            sample.torque1 = (int16_t)(send_buf[i].motor1_torque * 100.0f);
+            sample.torque2 = (int16_t)(send_buf[i].motor2_torque * 100.0f);
+
+            /* 状态标签合并: 高4位m1_state, 低4位m2_state */
+            sample.states = ((send_buf[i].m1_state_label & 0x0F) << 4) |
+                            (send_buf[i].m2_state_label & 0x0F);
+
+            memcpy(s_send_buffer + offset, &sample, sizeof(tcp_sample_t));
+            offset += sizeof(tcp_sample_t);
+        }
+    }
+
+    /* 计算CRC8校验（从magic到最后一条数据，不包括crc8本身） */
+    uint8_t crc8 = calc_crc8(s_send_buffer, offset);
+    s_send_buffer[offset] = crc8;
+    offset += 1;
+
+    s_actual_packet_size = offset;
 }
 
 /* 发送到公网服务器 */
@@ -465,7 +661,7 @@ static esp_err_t tcp_send_packet_wan(void)
         return ESP_FAIL;
     }
 
-    int sent = send(s_tcp_socket, &s_send_packet, sizeof(s_send_packet), 0);
+    int sent = send(s_tcp_socket, s_send_buffer, s_actual_packet_size, 0);
     if (sent < 0) {
         // ESP_LOGE(TAG, "公网发送失败: %d", errno);  // 运行时日志已禁用
         s_tcp_connected = false;
@@ -486,7 +682,7 @@ static esp_err_t tcp_send_packet_lan(void)
         return ESP_FAIL;
     }
 
-    int sent = send(s_tcp_lan_socket, &s_send_packet, sizeof(s_send_packet), 0);
+    int sent = send(s_tcp_lan_socket, s_send_buffer, s_actual_packet_size, 0);
     if (sent < 0) {
         // ESP_LOGE(TAG, "局域网发送失败: %d", errno);  // 运行时日志已禁用
         s_tcp_lan_connected = false;
@@ -497,30 +693,166 @@ static esp_err_t tcp_send_packet_lan(void)
 }
 #endif
 
+/**
+ * @brief 清空数据发送缓冲区（丢弃旧数据）
+ */
+static void clear_data_buffers(void)
+{
+    if (s_buffer_mutex == NULL) {
+        return;
+    }
+    if (xSemaphoreTake(s_buffer_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_write_buf_idx = 0;
+        s_write_index = 0;
+        s_send_buf_idx = 0;
+        s_pending_count = 0;
+        memset(s_buffers, 0, sizeof(s_buffers));
+        xSemaphoreGive(s_buffer_mutex);
+    }
+}
+
 #if SERIAL_PASSTHROUGH_ENABLE
 /* 串口透传专用任务句柄 */
 static TaskHandle_t s_serial_task_handle = NULL;
 static volatile bool s_serial_packet_ready = false;
-static tcp_data_packet_t s_serial_send_packet;  /* 串口发送专用缓冲区 */
+static uint8_t s_serial_send_buffer[TCP_PACKET_SIZE_WITH_ROLL];  /* 串口发送专用缓冲区 */
+static size_t s_serial_packet_size = 0;  /* 串口发送的包大小 */
+
+/* 对时状态 */
+static volatile bool s_serial_time_synced = false;  /* 是否已通过串口对时成功 */
+
+/**
+ * @brief 检查串口接收的对时响应并设置系统时间
+ * @param server_time_ms 输出参数，服务器时间戳（毫秒）
+ * @return true 收到对时响应, false 未收到
+ */
+static bool check_time_sync_response(int64_t *server_time_ms)
+{
+    /* 检查UART0是否有数据可读 */
+    size_t buffered_len = 0;
+    uart_get_buffered_data_len(UART_NUM_0, &buffered_len);
+
+    if (buffered_len >= TIME_SYNC_RESPONSE_SIZE) {
+        uint8_t rx_buf[16];
+        /* 使用较长的超时确保数据完整接收 */
+        int read_len = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(20));
+
+        if (read_len >= TIME_SYNC_RESPONSE_SIZE) {
+            /* 查找 CC AA + 时间戳 响应 */
+            for (int i = 0; i <= read_len - TIME_SYNC_RESPONSE_SIZE; i++) {
+                if (rx_buf[i] == TIME_SYNC_RESPONSE_BYTE1 && rx_buf[i+1] == TIME_SYNC_RESPONSE_BYTE2) {
+                    /* 解析8字节时间戳（小端序） */
+                    *server_time_ms = (int64_t)rx_buf[i+2] |
+                                      ((int64_t)rx_buf[i+3] << 8) |
+                                      ((int64_t)rx_buf[i+4] << 16) |
+                                      ((int64_t)rx_buf[i+5] << 24) |
+                                      ((int64_t)rx_buf[i+6] << 32) |
+                                      ((int64_t)rx_buf[i+7] << 40) |
+                                      ((int64_t)rx_buf[i+8] << 48) |
+                                      ((int64_t)rx_buf[i+9] << 56);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief 发送对时请求 (AA CC)
+ */
+static void send_time_sync_request(void)
+{
+    uint8_t request_packet[2] = {TIME_SYNC_REQUEST_BYTE1, TIME_SYNC_REQUEST_BYTE2};
+    int written = uart_write_bytes(UART_NUM_0, request_packet, 2);
+    if (written == 2) {
+        uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
+    }
+}
+
+/**
+ * @brief 发送对时确认 (BB BB) - 三次握手第三步
+ */
+static void send_time_sync_confirm(void)
+{
+    uint8_t confirm_packet[2] = {TIME_SYNC_CONFIRM_BYTE1, TIME_SYNC_CONFIRM_BYTE2};
+    int written = uart_write_bytes(UART_NUM_0, confirm_packet, 2);
+    if (written == 2) {
+        uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
+    }
+}
 
 /**
  * @brief 串口透传发送任务（独立任务，避免阻塞主上传任务）
  */
 static void serial_passthrough_task(void *pvParameters)
 {
-    // ESP_LOGI(TAG, "串口透传任务启动 (UART0)");  // 运行时日志已禁用
+    uint32_t sync_attempt = 0;
+    int64_t server_time_ms = 0;
 
+    /* ========== 阶段1: 三次握手对时（无限循环直到成功） ========== */
+    /* 对时流程:
+     * 1. 设备发送 AA CC (对时请求)
+     * 2. 服务端回复 CC AA + 8字节时间戳 (对时响应)
+     * 3. 设备发送 BB BB (对时确认)
+     */
+    while (!s_serial_time_synced) {
+        sync_attempt++;
+
+        /* 清空接收缓冲区 */
+        uart_flush_input(UART_NUM_0);
+
+        /* 第一步: 发送对时请求 AA CC */
+        send_time_sync_request();
+
+        /* 第二步: 等待服务端响应 CC AA + 时间戳，最多等待500ms */
+        for (int i = 0; i < 50; i++) {  /* 50 * 10ms = 500ms */
+            vTaskDelay(pdMS_TO_TICKS(10));
+
+            if (check_time_sync_response(&server_time_ms)) {
+                /* 第三步: 收到对时响应，应用时间并回复 BB BB 确认 */
+                apply_server_time(server_time_ms);
+                send_time_sync_confirm();
+
+                s_serial_time_synced = true;
+                s_serial_ntp_synced = true;  /* 用于 fill_send_packet 中设置 FLAG_SYNC */
+                break;
+            }
+        }
+
+        if (!s_serial_time_synced) {
+            vTaskDelay(pdMS_TO_TICKS(500));  /* 等待后重试 */
+        }
+    }
+
+    /* 对时成功后清空缓冲区 */
+    uart_flush_input(UART_NUM_0);
+    clear_data_buffers();
+
+    /* ========== 阶段2: 正常数据传输 ========== */
     while (1) {
-        /* 等待数据包就绪 */
+        /* 已注册，发送正常数据包 */
         if (s_serial_packet_ready) {
-            /* 使用fwrite写入stdout，阻塞等待发送完成 */
-            fwrite(&s_serial_send_packet, 1, sizeof(s_serial_send_packet), stdout);
-            fflush(stdout);
+            /* 使用uart_write_bytes确保完全发送 */
+            int written = uart_write_bytes(UART_NUM_0, s_serial_send_buffer, s_serial_packet_size);
+            if (written == (int)s_serial_packet_size) {
+                /* 等待UART TX FIFO发送完毕 */
+                uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
+            }
 
             s_serial_packet_ready = false;
             s_serial_packets_sent++;
-            s_serial_bytes_sent += sizeof(s_serial_send_packet);
+            s_serial_bytes_sent += s_serial_packet_size;
         }
+
+        /* 丢弃任何意外收到的数据（避免干扰） */
+        int len = 0;
+        uart_get_buffered_data_len(UART_NUM_0, (size_t *)&len);
+        if (len > 0) {
+            uart_flush_input(UART_NUM_0);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
@@ -530,6 +862,44 @@ static void serial_passthrough_task(void *pvParameters)
  */
 static esp_err_t serial_passthrough_init(void)
 {
+    /* ESP32-S3 UART0默认引脚: TX=GPIO43, RX=GPIO44 */
+    const int UART0_TX_PIN = 43;
+    const int UART0_RX_PIN = 44;
+
+    /* 配置UART0用于串口透传 */
+    uart_config_t uart_config = {
+        .baud_rate = SERIAL_PASSTHROUGH_BAUDRATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    /* 先卸载已有的UART驱动（ESP-IDF控制台可能已安装） */
+    if (uart_is_driver_installed(UART_NUM_0)) {
+        uart_driver_delete(UART_NUM_0);
+    }
+
+    /* 安装UART驱动（必须先安装驱动再配置参数）
+     * RX缓冲区设为512字节（足够接收响应），TX缓冲区设为2048字节 */
+    esp_err_t err = uart_driver_install(UART_NUM_0, 512, 2048, 0, NULL, 0);
+    if (err != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    /* 配置UART参数 */
+    uart_param_config(UART_NUM_0, &uart_config);
+
+    /* 显式设置UART0引脚（确保RX引脚正确配置） */
+    uart_set_pin(UART_NUM_0, UART0_TX_PIN, UART0_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+    /* 等待一小段时间让UART稳定 */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    /* 清空接收缓冲区（丢弃控制台残留数据） */
+    uart_flush_input(UART_NUM_0);
+
     /* 创建独立的串口发送任务，优先级较低，避免阻塞其他任务 */
     BaseType_t ret = xTaskCreate(serial_passthrough_task,
                                   "serial_tx",
@@ -543,7 +913,7 @@ static esp_err_t serial_passthrough_init(void)
     }
 
     s_serial_initialized = true;
-    // ESP_LOGI(TAG, "串口透传已启用 (UART0, 独立任务)");  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "串口透传已启用 (UART0, %d bps)", SERIAL_PASSTHROUGH_BAUDRATE);  // 运行时日志已禁用
     return ESP_OK;
 }
 
@@ -562,7 +932,8 @@ static esp_err_t serial_send_packet(void)
     }
 
     /* 复制数据包到串口发送缓冲区 */
-    memcpy(&s_serial_send_packet, &s_send_packet, sizeof(tcp_data_packet_t));
+    memcpy(s_serial_send_buffer, s_send_buffer, s_actual_packet_size);
+    s_serial_packet_size = s_actual_packet_size;
     s_serial_packet_ready = true;
 
     return ESP_OK;
@@ -583,7 +954,16 @@ static void tcp_upload_task(void *pvParameters)
         /* 检查公网TCP连接 */
         if (!s_tcp_connected) {
             /* 静默重连，日志频率已在tcp_connect_to_server中控制 */
-            tcp_connect_to_server();
+            if (tcp_connect_to_server() == ESP_OK) {
+                /* 连接成功后进行三次握手对时（如果尚未同步） */
+                if (!s_time_synced) {
+                    tcp_time_sync();
+                    /* 对时成功后清空旧数据 */
+                    if (s_time_synced) {
+                        clear_data_buffers();
+                    }
+                }
+            }
         }
 
 #if TCP_ENABLE_LAN_UPLOAD

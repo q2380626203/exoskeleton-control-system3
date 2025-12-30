@@ -1,5 +1,9 @@
-idf_component_register(SRCS "bt_imu.c" "tcp_data_upload.c" "voice_module.c" "button_detector.cpp" "main.cpp" "unitree_motor.cpp" "crc_utils.cpp" "speed_follow_mode.cpp" "position_buffer.c" "wifi_webserver.c"
-                    INCLUDE_DIRS "."
+idf_component_register(SRCS "main.cpp"
+                            "unitree_motor_driver/unitree_motor.cpp" "unitree_motor_driver/crc_utils.cpp"
+                            "external_modules/bt_imu.c" "external_modules/voice_module.c" "external_modules/button_detector.cpp"
+                            "core_algorithm/position_buffer.c" "core_algorithm/speed_follow_mode.cpp"
+                            "host_comm/tcp_data_upload.c" "host_comm/wifi_webserver.c" "host_comm/web_handlers.cpp"
+                    INCLUDE_DIRS "." "unitree_motor_driver" "external_modules" "core_algorithm" "host_comm"
                     # 嵌入AI模型文件（二进制格式，节省Flash空间）
                     # EMBED_FILES "model/motion_ai_model_quant.tflite"
                     # ESP-IDF 组件依赖
