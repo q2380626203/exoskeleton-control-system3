@@ -12,14 +12,6 @@ extern "C" {
 #endif
 
 // ============================================================================
-// GPIO引脚定义
-// ============================================================================
-
-#define BUTTON_ASSIST_UP_PIN      GPIO_NUM_3   // 助力增加按键（自复位）
-#define BUTTON_POWER_SWITCH_PIN   GPIO_NUM_4   // 助力开关（持续导通）
-#define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5   // 助力减少按键（自复位）
-
-// ============================================================================
 // 防抖参数
 // ============================================================================
 
@@ -70,8 +62,11 @@ typedef void (*switch_change_callback_t)(gpio_num_t pin, SwitchState new_state);
 
 /**
  * @brief 初始化所有按键和开关
+ * @param assist_up_pin 助力增加按键引脚
+ * @param power_switch_pin 电源开关引脚
+ * @param assist_down_pin 助力减少按键引脚
  */
-void button_detector_init(void);
+void button_detector_init(gpio_num_t assist_up_pin, gpio_num_t power_switch_pin, gpio_num_t assist_down_pin);
 
 /**
  * @brief 按键检测任务（FreeRTOS任务）

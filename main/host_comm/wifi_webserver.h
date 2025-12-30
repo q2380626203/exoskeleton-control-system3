@@ -8,13 +8,11 @@ extern "C" {
 #include "esp_err.h"
 #include "esp_http_server.h"
 
-/* WiFi热点配置 */
-#define WIFI_AP_SSID            "ESP32_3"
+/* WiFi AP 和 Web服务器配置 */
+#define WIFI_AP_SSID            "ESP32_AP"
 #define WIFI_AP_PASSWORD        "12345678"
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
-
-/* Web服务器配置 */
 #define WEBSERVER_PORT          80
 
 /**

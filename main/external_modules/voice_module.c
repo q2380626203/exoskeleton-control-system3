@@ -33,10 +33,11 @@ static const char* utf8_gb2312_map[][2] = {
 
 /**
  * @brief 将 UTF-8 文本转换为 GB2312 编码并通过 UART 发送给语音模块
+ * @param module 语音模块结构体指针
  * @param text 要发送的 UTF-8 格式文本
  * @note 使用预定义的映射表进行简单字符串替换转换
  */
-static void voice_send_gb2312(const char* text) {
+static void voice_send_gb2312(VoiceModule* module, const char* text) {
     char buffer[512];
     strcpy(buffer, text);
 
@@ -57,7 +58,7 @@ static void voice_send_gb2312(const char* text) {
         }
     }
 
-    uart_write_bytes(VOICE_UART_NUM, buffer, strlen(buffer));
+    uart_write_bytes(module->uart_num, buffer, strlen(buffer));
 }
 
 // ============================================================================
@@ -67,11 +68,18 @@ static void voice_send_gb2312(const char* text) {
 /**
  * @brief 初始化语音模块
  * @param module 语音模块结构体指针
- * @note 配置 UART0 参数(TX=GPIO1, RX=GPIO3, 9600bps)并等待模块稳定
+ * @param uart_num UART端口号
+ * @param tx_pin 发送引脚
+ * @param rx_pin 接收引脚
+ * @param baud_rate 波特率
+ * @note 配置 UART 参数并等待模块稳定
  */
-void voice_module_init(VoiceModule* module) {
+void voice_module_init(VoiceModule* module, uart_port_t uart_num, gpio_num_t tx_pin, gpio_num_t rx_pin, int baud_rate) {
+    // 保存UART端口号
+    module->uart_num = uart_num;
+
     // 配置UART参数
-    module->uart_config.baud_rate = VOICE_BAUDRATE;
+    module->uart_config.baud_rate = baud_rate;
     module->uart_config.data_bits = UART_DATA_8_BITS;
     module->uart_config.parity = UART_PARITY_DISABLE;
     module->uart_config.stop_bits = UART_STOP_BITS_1;
@@ -79,9 +87,9 @@ void voice_module_init(VoiceModule* module) {
     module->uart_config.source_clk = UART_SCLK_DEFAULT;
 
     // 安装UART驱动
-    ESP_ERROR_CHECK(uart_driver_install(VOICE_UART_NUM, 1024, 1024, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(VOICE_UART_NUM, &module->uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(VOICE_UART_NUM, VOICE_TX_PIN, VOICE_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, 1024, 1024, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &module->uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(uart_num, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     module->initialized = true;
 
@@ -100,7 +108,7 @@ void voice_module_init(VoiceModule* module) {
 void voice_speak(VoiceModule* module, const char* text) {
     if (!module->initialized) return;
 
-    voice_send_gb2312(text);
-    uart_write_bytes(VOICE_UART_NUM, "\r\n\r\n\r\n", 6);
+    voice_send_gb2312(module, text);
+    uart_write_bytes(module->uart_num, "\r\n\r\n\r\n", 6);
     vTaskDelay(pdMS_TO_TICKS(100));
 }

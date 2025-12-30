@@ -26,11 +26,13 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
     if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
+        (void)event_data;  // 运行时日志已禁用，避免未使用变量警告
+        // wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         // ESP_LOGI(TAG, "客户端连接，MAC地址:" MACSTR ", AID=%d",
         //          MAC2STR(event->mac), event->aid);
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
-        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
+        (void)event_data;  // 运行时日志已禁用，避免未使用变量警告
+        // wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         // ESP_LOGI(TAG, "客户端断开连接，MAC地址:" MACSTR ", AID=%d",
         //          MAC2STR(event->mac), event->aid);
     }

@@ -25,6 +25,28 @@
 
 // static const char *TAG = "TCP_UPLOAD";  // 运行时日志已禁用，TAG未使用
 
+/* 网络配置（由 tcp_set_network_config 初始化） */
+static const char *s_wifi_ssid = NULL;
+static const char *s_wifi_password = NULL;
+static const char *s_tcp_server_host = NULL;
+static uint16_t s_tcp_server_port = 0;
+static uint16_t s_tcp_lan_server_port = 0;
+static uint8_t s_device_id = 0;
+
+/**
+ * @brief 设置网络配置
+ */
+void tcp_set_network_config(const tcp_network_config_t *config)
+{
+    if (config == NULL) return;
+    s_wifi_ssid = config->wifi_ssid;
+    s_wifi_password = config->wifi_password;
+    s_tcp_server_host = config->tcp_server_host;
+    s_tcp_server_port = config->tcp_server_port;
+    s_tcp_lan_server_port = config->tcp_lan_server_port;
+    s_device_id = config->device_id;
+}
+
 /* WiFi事件标志 */
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -38,14 +60,14 @@ static bool s_tcp_connected = false;
 static bool s_upload_running = false;
 static TaskHandle_t s_upload_task_handle = NULL;
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
 /* TCP连接状态 - 局域网 */
 static int s_tcp_lan_socket = -1;
 static bool s_tcp_lan_connected = false;
 static esp_ip4_addr_t s_gateway_ip = {0};  /* 网关IP（手机热点地址） */
 #endif
 
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传状态 */
 static bool s_serial_initialized = false;
 static uint32_t s_serial_packets_sent = 0;
@@ -88,7 +110,7 @@ static volatile bool s_time_synced = false;
 /* 前向声明 */
 static void clear_data_buffers(void);
 static esp_err_t tcp_time_sync(void);
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传前向声明 */
 #endif
 
@@ -112,7 +134,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         // ESP_LOGI(TAG, "获取到IP地址: " IPSTR, IP2STR(&event->ip_info.ip));  // 运行时日志已禁用
         (void)event;  /* 避免未使用警告 */
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
         /* 保存网关地址（手机热点的IP） */
         s_gateway_ip = event->ip_info.gw;
         // ESP_LOGI(TAG, "网关地址(局域网服务器): " IPSTR, IP2STR(&s_gateway_ip));  // 运行时日志已禁用
@@ -162,11 +184,16 @@ esp_err_t wifi_init_sta(void)
     /* WiFi STA配置 */
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = WIFI_STA_SSID,
-            .password = WIFI_STA_PASSWORD,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
+    /* 复制SSID和密码 */
+    if (s_wifi_ssid) {
+        strncpy((char *)wifi_config.sta.ssid, s_wifi_ssid, sizeof(wifi_config.sta.ssid) - 1);
+    }
+    if (s_wifi_password) {
+        strncpy((char *)wifi_config.sta.password, s_wifi_password, sizeof(wifi_config.sta.password) - 1);
+    }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
@@ -355,7 +382,7 @@ static esp_err_t tcp_connect_to_server(void)
     }
 
     /* DNS解析 */
-    hp = gethostbyname(TCP_SERVER_HOST);
+    hp = gethostbyname(s_tcp_server_host);
     if (hp == NULL) {
         // 运行时日志已禁用以减少串口输出
         // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
@@ -379,7 +406,7 @@ static esp_err_t tcp_connect_to_server(void)
     /* 设置服务器地址 */
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(TCP_SERVER_PORT);
+    server_addr.sin_port = htons(s_tcp_server_port);
     memcpy(&server_addr.sin_addr, hp->h_addr, hp->h_length);
 
     /* 连接服务器 */
@@ -409,7 +436,7 @@ static esp_err_t tcp_connect_to_server(void)
     return ESP_OK;
 }
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
 /* TCP连接到局域网服务器（网关/手机热点） */
 static esp_err_t tcp_connect_to_lan_server(void)
 {
@@ -441,14 +468,14 @@ static esp_err_t tcp_connect_to_lan_server(void)
     /* 设置服务器地址（网关IP） */
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(TCP_LAN_SERVER_PORT);
+    server_addr.sin_port = htons(s_tcp_lan_server_port);
     server_addr.sin_addr.s_addr = s_gateway_ip.addr;
 
     /* 连接服务器 */
     if (connect(s_tcp_lan_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         // 运行时日志已禁用以减少串口输出
         // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "LAN: 连接 " IPSTR ":%d 失败", IP2STR(&s_gateway_ip), TCP_LAN_SERVER_PORT);
+        //     ESP_LOGW(TAG, "LAN: 连接 " IPSTR ":%d 失败", IP2STR(&s_gateway_ip), s_tcp_lan_server_port);
         //     s_last_tcp_log_time = now;
         // }
         close(s_tcp_lan_socket);
@@ -467,7 +494,7 @@ static esp_err_t tcp_connect_to_lan_server(void)
     setsockopt(s_tcp_lan_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     s_tcp_lan_connected = true;
-    // ESP_LOGI(TAG, "LAN服务器连接成功: " IPSTR ":%d", IP2STR(&s_gateway_ip), TCP_LAN_SERVER_PORT);  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "LAN服务器连接成功: " IPSTR ":%d", IP2STR(&s_gateway_ip), s_tcp_lan_server_port);  // 运行时日志已禁用
     return ESP_OK;
 }
 #endif
@@ -557,7 +584,7 @@ static void fill_send_packet(void)
     uint8_t flags = 0;
     /* 只要任一同步方式成功即可（WiFi TCP或串口透传） */
     if (s_time_synced) flags |= FLAG_SYNC;
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
     if (s_serial_ntp_synced) flags |= FLAG_SYNC;
 #endif
     if (has_roll) flags |= FLAG_HAS_ROLL;
@@ -567,7 +594,7 @@ static void fill_send_packet(void)
 
     /* 填充包头 */
     s_packet_header.magic = 0xAA55;
-    s_packet_header.device_id = DEVICE_ID;
+    s_packet_header.device_id = s_device_id;
     s_packet_header.version = 10;  /* 协议版本10: 精确时间戳版 */
     s_packet_header.seq = (uint8_t)(s_seq_number++ & 0xFF);  /* 0-255循环 */
     s_packet_header.flags = flags;
@@ -674,7 +701,7 @@ static esp_err_t tcp_send_packet_wan(void)
     return ESP_OK;
 }
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
 /* 发送到局域网服务器 */
 static esp_err_t tcp_send_packet_lan(void)
 {
@@ -711,7 +738,7 @@ static void clear_data_buffers(void)
     }
 }
 
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传专用任务句柄 */
 static TaskHandle_t s_serial_task_handle = NULL;
 static volatile bool s_serial_packet_ready = false;
@@ -945,7 +972,7 @@ static void tcp_upload_task(void *pvParameters)
 {
     // ESP_LOGI(TAG, "TCP上传任务启动");  // 运行时日志已禁用
 
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
     /* 初始化串口透传 */
     serial_passthrough_init();
 #endif
@@ -966,7 +993,7 @@ static void tcp_upload_task(void *pvParameters)
             }
         }
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
         /* 检查局域网TCP连接 */
         if (!s_tcp_lan_connected) {
             tcp_connect_to_lan_server();
@@ -981,13 +1008,13 @@ static void tcp_upload_task(void *pvParameters)
             /* 发送到公网 */
             bool wan_ok = (tcp_send_packet_wan() == ESP_OK);
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
             /* 发送到局域网 */
             bool lan_ok = (tcp_send_packet_lan() == ESP_OK);
             (void)lan_ok;  /* 避免未使用警告 */
 #endif
 
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
             /* 通过串口透传发送（4G模块） - 始终发送，不受WiFi/TCP状态影响 */
             bool serial_ok = (serial_send_packet() == ESP_OK);
             (void)serial_ok;  /* 避免未使用警告 */
@@ -995,10 +1022,10 @@ static void tcp_upload_task(void *pvParameters)
 
             /* 只要有一个通道发送成功就移动缓冲区（避免数据丢失） */
             bool any_ok = wan_ok;
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
             any_ok = any_ok || lan_ok;
 #endif
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
             any_ok = any_ok || serial_ok;
 #endif
             if (any_ok) {
@@ -1012,10 +1039,10 @@ static void tcp_upload_task(void *pvParameters)
 
         /* 如果所有网络连接都断开，延迟重连 */
         bool need_slow_loop = !s_tcp_connected;
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
         need_slow_loop = need_slow_loop && !s_tcp_lan_connected;
 #endif
-#if SERIAL_PASSTHROUGH_ENABLE
+#if defined(ENABLE_SERIAL_4G_TCP)
         /* 串口透传始终工作，不需要慢循环 */
         need_slow_loop = false;
 #endif
@@ -1033,7 +1060,7 @@ static void tcp_upload_task(void *pvParameters)
     }
     s_tcp_connected = false;
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
     if (s_tcp_lan_socket >= 0) {
         close(s_tcp_lan_socket);
         s_tcp_lan_socket = -1;
@@ -1148,7 +1175,7 @@ bool tcp_data_is_connected(void)
     return s_tcp_connected;
 }
 
-#if TCP_ENABLE_LAN_UPLOAD
+#if defined(ENABLE_WIFI_LAN_TCP)
 bool tcp_data_lan_is_connected(void)
 {
     return s_tcp_lan_connected;

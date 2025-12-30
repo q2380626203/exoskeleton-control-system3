@@ -10,31 +10,11 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 服务器配置 - 公网 */
-#define TCP_SERVER_HOST         "8.137.35.154"
-#define TCP_SERVER_PORT         16384
+/* 北京时区定义 */
+#define BEIJING_TIMEZONE "CST-8"
 
-/* 服务器配置 - 局域网（自动获取网关地址） */
-#define TCP_LAN_SERVER_PORT     8888    // 局域网服务器端口（手机上运行的服务端口）
-#define TCP_ENABLE_LAN_UPLOAD   1       // 1=启用局域网上传, 0=禁用
-
-/* 串口透传配置 - 通过4G模块透传到远程服务器 */
-#define SERIAL_PASSTHROUGH_ENABLE   1       // 1=启用串口透传, 0=禁用
-// 注意: 串口透传使用 fwrite(stdout)，波特率由 ESP-IDF menuconfig 控制台配置决定
-// 以下两个宏未使用，保留作为参考：
-// #define SERIAL_PASSTHROUGH_UART     UART_NUM_0  // 使用串口0（4G模块连接）
-// #define SERIAL_PASSTHROUGH_BAUD     115200      // 串口波特率
-
-/* WiFi STA配置 */
-#define WIFI_STA_SSID           "123"
-#define WIFI_STA_PASSWORD       "12345678"
+/* WiFi STA重试次数 */
 #define WIFI_STA_MAX_RETRY      10
-
-/* 时区配置 */
-#define BEIJING_TIMEZONE        "CST-8"         // 北京时间 UTC+8
-
-/* 设备ID配置 - 修改此值区分不同ESP32设备 */
-#define DEVICE_ID               3       // 设备编号: 1, 2, 3...
 
 /* 数据上传配置 */
 #define TCP_SAMPLES_PER_PACKET  100     // 每包100条数据
@@ -166,6 +146,22 @@ typedef struct {
     int8_t m1_state_label;      // 电机1状态标签: 0=空闲, 1=抬腿, 2=压腿, 3=检测速度触发
     int8_t m2_state_label;      // 电机2状态标签
 } motor_data_record_t;
+
+/* 网络配置结构体 */
+typedef struct {
+    const char *wifi_ssid;          // WiFi SSID
+    const char *wifi_password;      // WiFi 密码
+    const char *tcp_server_host;    // TCP服务器地址
+    uint16_t tcp_server_port;       // TCP服务器端口
+    uint16_t tcp_lan_server_port;   // 局域网服务器端口
+    uint8_t device_id;              // 设备ID
+} tcp_network_config_t;
+
+/**
+ * @brief 设置网络配置（必须在wifi_tcp_init_background之前调用）
+ * @param config 网络配置结构体指针
+ */
+void tcp_set_network_config(const tcp_network_config_t *config);
 
 /**
  * @brief 初始化WiFi STA模式

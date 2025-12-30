@@ -22,6 +22,11 @@ static const char *TAG = "BUTTON_DETECTOR";
 // 静态全局变量
 // ============================================================================
 
+// 引脚配置（由 button_detector_init 初始化）
+static gpio_num_t g_assist_up_pin = GPIO_NUM_NC;
+static gpio_num_t g_power_switch_pin = GPIO_NUM_NC;
+static gpio_num_t g_assist_down_pin = GPIO_NUM_NC;
+
 // 检测器实例
 static ButtonDetector assist_up_button;
 static ButtonDetector assist_down_button;
@@ -159,9 +164,9 @@ static void button_detector_update(ButtonDetector* detector) {
                 // ESP_LOGI(TAG, "按键按下 GPIO%d", detector->gpio_pin);
 
                 // 触发对应的回调
-                if (detector->gpio_pin == BUTTON_ASSIST_UP_PIN && on_assist_up_pressed) {
+                if (detector->gpio_pin == g_assist_up_pin && on_assist_up_pressed) {
                     on_assist_up_pressed(detector->gpio_pin);
-                } else if (detector->gpio_pin == BUTTON_ASSIST_DOWN_PIN && on_assist_down_pressed) {
+                } else if (detector->gpio_pin == g_assist_down_pin && on_assist_down_pressed) {
                     on_assist_down_pressed(detector->gpio_pin);
                 }
             }
@@ -352,30 +357,35 @@ static void default_power_switch_callback(gpio_num_t pin, SwitchState new_state)
 
 /**
  * @brief 初始化所有按键和开关
+ * @param assist_up_pin 助力增加按键引脚
+ * @param power_switch_pin 电源开关引脚
+ * @param assist_down_pin 助力减少按键引脚
  * @note 配置GPIO引脚为输入模式，初始化三个检测器（助力增加、助力减少、电源开关）
- *       GPIO3: 助力增加按键
- *       GPIO4: 电源开关
- *       GPIO5: 助力减少按键
  */
-void button_detector_init(void) {
+void button_detector_init(gpio_num_t assist_up_pin, gpio_num_t power_switch_pin, gpio_num_t assist_down_pin) {
     // ESP_LOGI(TAG, "初始化按键检测器...");  // 运行时日志已禁用
 
+    // 保存引脚配置
+    g_assist_up_pin = assist_up_pin;
+    g_power_switch_pin = power_switch_pin;
+    g_assist_down_pin = assist_down_pin;
+
     // 配置GPIO引脚
-    configure_gpio_input(BUTTON_ASSIST_UP_PIN);
-    configure_gpio_input(BUTTON_POWER_SWITCH_PIN);
-    configure_gpio_input(BUTTON_ASSIST_DOWN_PIN);
+    configure_gpio_input(g_assist_up_pin);
+    configure_gpio_input(g_power_switch_pin);
+    configure_gpio_input(g_assist_down_pin);
 
     // 初始化检测器
-    init_button_detector(&assist_up_button, BUTTON_ASSIST_UP_PIN);
-    init_button_detector(&assist_down_button, BUTTON_ASSIST_DOWN_PIN);
-    init_switch_detector(&power_switch, BUTTON_POWER_SWITCH_PIN);
+    init_button_detector(&assist_up_button, g_assist_up_pin);
+    init_button_detector(&assist_down_button, g_assist_down_pin);
+    init_switch_detector(&power_switch, g_power_switch_pin);
 
     // 读取开关初始状态
-    power_switch.current_state = gpio_get_level(BUTTON_POWER_SWITCH_PIN) ? SWITCH_STATE_ON : SWITCH_STATE_OFF;
+    power_switch.current_state = gpio_get_level(g_power_switch_pin) ? SWITCH_STATE_ON : SWITCH_STATE_OFF;
     power_switch.last_state = power_switch.current_state;
 
     // ESP_LOGI(TAG, "按键检测器初始化完成");  // 运行时日志已禁用
-    // ESP_LOGI(TAG, "GPIO3: 助力增加, GPIO4: 电源开关, GPIO5: 助力减少");  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "GPIO%d: 助力增加, GPIO%d: 电源开关, GPIO%d: 助力减少", assist_up_pin, power_switch_pin, assist_down_pin);  // 运行时日志已禁用
 }
 
 /**

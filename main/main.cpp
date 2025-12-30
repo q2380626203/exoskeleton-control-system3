@@ -24,19 +24,47 @@
 #include "bt_imu.h"
 
 // ==================== 硬件配置 ====================
+// 电机驱动 (UART2 + RS485)
 #define MOTOR_ID_1       0x01
 #define MOTOR_ID_2       0x02
 #define UART_PORT_NUM    UART_NUM_2
 #define UART_TX_PIN      GPIO_NUM_12
 #define UART_RX_PIN      GPIO_NUM_13
-#define MAX485_RE_DE_PIN GPIO_NUM_11
+#define MAX485_RE_DE_PIN GPIO_NUM_11    //自动流控拉高自动流控，开启后当普通串口使用
 #define UART_BAUD_RATE   4000000
 
-// 4G模块复位引脚 (低电平复位，正常工作时保持高电平)
-#define GPIO_4G_RESET    GPIO_NUM_10
+// 4G模块 (UART0透传)
+#define GPIO_4G_RESET    GPIO_NUM_10        // 复位引脚 (高电平正常工作)
+// 警告: UART0引脚(GPIO43/44)为系统默认，不可修改，否则会导致透传和烧录异常
+
+// 语音模块 (UART1)
+#define VOICE_UART_NUM   UART_NUM_1
+#define VOICE_TX_PIN     GPIO_NUM_2
+#define VOICE_RX_PIN     GPIO_NUM_1
+#define VOICE_BAUDRATE   9600
+
+// 按键
+#define BUTTON_ASSIST_UP_PIN      GPIO_NUM_3    // 助力增加按键
+#define BUTTON_POWER_SWITCH_PIN   GPIO_NUM_4    // 电源开关
+#define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5    // 助力减少按键
 
 // ==================== 功能开关 ====================
-// #define ENABLE_BT_IMU  // 启用蓝牙IMU
+// 注释掉对应行即可关闭该功能
+// #define ENABLE_BT_IMU                   // 启用蓝牙IMU
+#define ENABLE_WIFI_WAN_TCP                 // 启用WiFi外网TCP上传 (云服务器)
+// #define ENABLE_WIFI_LAN_TCP                 // 启用WiFi局域网TCP上传 (手机热点网关)
+#define ENABLE_SERIAL_4G_TCP                // 启用串口0透传4G模块TCP
+
+// ==================== 网络配置 ====================
+// WiFi STA模式 (连接外部网络)
+#define WIFI_STA_SSID           "123"
+#define WIFI_STA_PASSWORD       "12345678"
+
+// TCP服务器配置
+#define DEVICE_ID               3               // 设备编号: 1, 2, 3...
+#define TCP_SERVER_HOST         "8.137.35.154"  // 云服务器地址
+#define TCP_SERVER_PORT         16384           // 云服务器端口
+#define TCP_LAN_SERVER_PORT     8888            // 局域网服务器端口
 
 // ==================== 全局实例 ====================
 VoiceModule voice_module{};
@@ -215,7 +243,7 @@ void motor_control_task(void *pvParameters) {
  */
 extern "C" void app_main() {
     // 初始化语音模块
-    voice_module_init(&voice_module);
+    voice_module_init(&voice_module, VOICE_UART_NUM, VOICE_TX_PIN, VOICE_RX_PIN, VOICE_BAUDRATE);
 
     // 初始化蓝牙IMU
 #ifdef ENABLE_BT_IMU
@@ -227,6 +255,17 @@ extern "C" void app_main() {
     if (motor_params_mutex == NULL) {
         return;
     }
+
+    // 设置网络配置（必须在wifi_tcp_init_background之前）
+    tcp_network_config_t net_config = {
+        .wifi_ssid = WIFI_STA_SSID,
+        .wifi_password = WIFI_STA_PASSWORD,
+        .tcp_server_host = TCP_SERVER_HOST,
+        .tcp_server_port = TCP_SERVER_PORT,
+        .tcp_lan_server_port = TCP_LAN_SERVER_PORT,
+        .device_id = DEVICE_ID
+    };
+    tcp_set_network_config(&net_config);
 
     // 后台初始化WiFi和TCP
     wifi_tcp_init_background();
@@ -259,7 +298,7 @@ extern "C" void app_main() {
     }
 
     // 初始化按键检测
-    button_detector_init();
+    button_detector_init(BUTTON_ASSIST_UP_PIN, BUTTON_POWER_SWITCH_PIN, BUTTON_ASSIST_DOWN_PIN);
 
     // 创建任务
     xTaskCreate(button_detector_task, "button_task", 4096, NULL, 4, NULL);
