@@ -1,0 +1,24 @@
+# 服务端地址（这里要填你有公网IP的服务器的IP或者是服务器的域名）
+serverAddr = "8.137.35.154"
+# 服务器端口（Frp 服务端监听的端口）
+serverPort = 7000
+
+# 连接协议
+transport.protocol = "tcp"
+
+# 认证方式
+auth.method = "token"
+# 认证所使用的 Token（要和你刚才配置的服务端token完全一样！）
+auth.token = "123321"
+
+# 代理配置
+[[proxies]]
+# 代理名称(标识该代理的名称，根据你的喜好填写）
+name = "rocketcat"
+type = "tcp"   
+localIP = "127.0.0.1"
+localPort = 16384
+# 在 frp 中，一个代理对应一个需要公开访问的内网服务。
+# 一个客户端可以同时配置多个代理，以满足不同的需求。
+# 下面配置的是将 win10 远程桌面暴露到 frps_ip 60002端口上
+remotePort = 16384    # 这个端口和localPort 配置的一模一样，这样才能正常访问！
