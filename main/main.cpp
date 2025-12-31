@@ -49,11 +49,8 @@
 #define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5    // 助力减少按键
 
 // ==================== 功能开关 ====================
-// 注释掉对应行即可关闭该功能
-// #define ENABLE_BT_IMU                   // 启用蓝牙IMU
-#define ENABLE_WIFI_WAN_TCP                 // 启用WiFi外网TCP上传 (云服务器)
-// #define ENABLE_WIFI_LAN_TCP                 // 启用WiFi局域网TCP上传 (手机热点网关)
-#define ENABLE_SERIAL_4G_TCP                // 启用串口0透传4G模块TCP
+// #define ENABLE_BT_IMU                       // 启用蓝牙IMU
+// TCP相关开关在 tcp_data_upload.h 中定义
 
 // ==================== 网络配置 ====================
 // WiFi STA模式 (连接外部网络)

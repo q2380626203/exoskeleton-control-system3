@@ -10,6 +10,12 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+/* ==================== 功能开关 ==================== */
+/* 注释掉对应行即可关闭该功能 */
+#define ENABLE_WIFI_WAN_TCP                    // 启用WiFi外网TCP上传 (云服务器)
+// #define ENABLE_WIFI_LAN_TCP                 // 启用WiFi局域网TCP上传 (手机热点网关)
+#define ENABLE_SERIAL_4G_TCP                   // 启用串口0透传4G模块TCP
+
 /* 北京时区定义 */
 #define BEIJING_TIMEZONE "CST-8"
 

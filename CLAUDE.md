@@ -27,3 +27,24 @@ ESP_LOGI(TAG, "注册成功");
 ESP_LOGI(TAG, "调试信息");
 #endif
 ```
+
+## 开发环境
+
+### Python 路径
+
+本机 Python 解释器路径：
+```
+C:/Users/admin/AppData/Local/Programs/Python/Python39/python.exe
+```
+
+使用示例：
+```bash
+# 安装包
+C:/Users/admin/AppData/Local/Programs/Python/Python39/python.exe -m pip install <package>
+
+# 运行脚本
+C:/Users/admin/AppData/Local/Programs/Python/Python39/python.exe script.py
+
+# PyInstaller 打包
+C:/Users/admin/AppData/Local/Programs/Python/Python39/python.exe -m PyInstaller --onefile script.py
+```
