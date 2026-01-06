@@ -17,8 +17,8 @@ auth.token = "123321"
 name = "rocketcat"
 type = "tcp"   
 localIP = "127.0.0.1"
-localPort = 16384
+localPort = 16385
 # 在 frp 中，一个代理对应一个需要公开访问的内网服务。
 # 一个客户端可以同时配置多个代理，以满足不同的需求。
 # 下面配置的是将 win10 远程桌面暴露到 frps_ip 60002端口上
-remotePort = 16384    # 这个端口和localPort 配置的一模一样，这样才能正常访问！
+remotePort = 16385    # 这个端口和localPort 配置的一模一样，这样才能正常访问！

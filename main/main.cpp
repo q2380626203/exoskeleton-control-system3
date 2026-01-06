@@ -21,6 +21,7 @@
 #include "voice_module.h"
 #include "button_detector.h"
 #include "tcp_data_upload.h"
+#include "tcp_replay_receive.h"
 #include "bt_imu.h"
 
 // ==================== 硬件配置 ====================
@@ -58,9 +59,9 @@
 #define WIFI_STA_PASSWORD       "12345678"
 
 // TCP服务器配置
-#define DEVICE_ID               3               // 设备编号: 1, 2, 3...
+#define DEVICE_ID              3               // 设备编号: 1, 2, 3...
 #define TCP_SERVER_HOST         "8.137.35.154"  // 云服务器地址
-#define TCP_SERVER_PORT         16384           // 云服务器端口
+#define TCP_SERVER_PORT         16385           // 云服务器端口
 #define TCP_LAN_SERVER_PORT     8888            // 局域网服务器端口
 
 // ==================== 全局实例 ====================
@@ -115,8 +116,29 @@ void motor_control_task(void *pvParameters) {
     MotorParams current_motor_1, current_motor_2;
     float ch6_max = 0.0f, ch7_max = 0.0f;
     float roll_left = 0.0f, roll_right = 0.0f;
+    replay_sample_t replay_sample{};  // 回放数据
+    bool was_replay_mode = false;     // 上一次是否处于回放模式
+    speed_follow_mode_type_t saved_mode_type = SPEED_FOLLOW_MODE_PROGRAM;  // 保存原始模式
 
     while (1) {
+        // 检查是否处于回放模式
+        bool is_replay_mode = tcp_replay_is_active();
+
+        // 回放模式切换处理
+        if (is_replay_mode && !was_replay_mode) {
+            // 进入回放模式：切换到AI模式并激活
+            saved_mode_type = speed_follow.getModeType();
+            speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
+            speed_follow.enable(true);
+            speed_follow.enableMotorControl(true);
+            speed_follow.startAIRunning();  // 直接进入AI运行状态
+        } else if (!is_replay_mode && was_replay_mode) {
+            // 退出回放模式：停止AI运行并恢复原始模式
+            speed_follow.stopAIRunning();
+            speed_follow.setModeType(saved_mode_type);
+        }
+        was_replay_mode = is_replay_mode;
+
         // 读取电机参数
         if (xSemaphoreTake(motor_params_mutex, portMAX_DELAY) == pdTRUE) {
             current_motor_1 = global_motor_1;
@@ -143,42 +165,119 @@ void motor_control_task(void *pvParameters) {
         bool imu_right_valid = false;
 #endif
 
-        // 控制电机1
-        MotorCmdA1 cmd1;
-        cmd1.id = current_motor_1.motor_id;
-        cmd1.mode = current_motor_1.motor_mode;
-        cmd1.pos = current_motor_1.motor_pos;
-        cmd1.vel = current_motor_1.motor_vel;
-        cmd1.t = current_motor_1.motor_t;
-        cmd1.kp = current_motor_1.motor_kp;
-        cmd1.kd = current_motor_1.motor_kd;
+        // ==================== 回放模式：使用回放数据作为电机反馈 ====================
+        if (is_replay_mode && tcp_replay_get_next_sample(&replay_sample)) {
+            // 获取到下一条数据的时间间隔（用于精确时序控制）
+            uint16_t next_interval_ms = tcp_replay_get_next_interval_ms();
+            int64_t sample_start_time = esp_timer_get_time();  // 记录处理开始时间
 
-        esp_err_t err1 = motor_driver.sendRecv(cmd1, motor_data_1);
-        if (err1 == ESP_OK) {
-            uint32_t timestamp = esp_timer_get_time() / 1000;
-            position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
+            // 用回放数据填充电机反馈
+            motor_data_1.id = MOTOR_ID_1;
+            motor_data_1.pos = replay_sample.motor1_pos;
+            motor_data_1.vel = replay_sample.motor1_vel;
+            motor_data_1.t = replay_sample.motor1_torque;
+
+            motor_data_2.id = MOTOR_ID_2;
+            motor_data_2.pos = replay_sample.motor2_pos;
+            motor_data_2.vel = replay_sample.motor2_vel;
+            motor_data_2.t = replay_sample.motor2_torque;
+
+            // 使用回放数据中的roll（如果有效）
+            if (!isnan(replay_sample.roll_left)) {
+                roll_left = replay_sample.roll_left;
+                imu_left_valid = true;
+            }
+            if (!isnan(replay_sample.roll_right)) {
+                roll_right = replay_sample.roll_right;
+                imu_right_valid = true;
+            }
+
+            // 直接注入CSV中的状态标签（跳过波形分析和状态检测）
+            speed_follow.updateAIPhase(replay_sample.m1_state_label, replay_sample.m2_state_label);
+
+            // 调用update来根据注入的状态控制电机参数
+            speed_follow.update(motor_data_1, 0, 0, roll_left, roll_right, imu_left_valid, imu_right_valid);
+            speed_follow.update(motor_data_2, 0, 0, roll_left, roll_right, imu_left_valid, imu_right_valid);
+
+            // 发送控制命令到真实电机（使用算法计算的参数）
+            MotorCmdA1 cmd1;
+            cmd1.id = current_motor_1.motor_id;
+            cmd1.mode = current_motor_1.motor_mode;
+            cmd1.pos = current_motor_1.motor_pos;
+            cmd1.vel = current_motor_1.motor_vel;
+            cmd1.t = current_motor_1.motor_t;
+            cmd1.kp = current_motor_1.motor_kp;
+            cmd1.kd = current_motor_1.motor_kd;
+            MotorDataA1 dummy1{};
+            motor_driver.sendRecv(cmd1, dummy1);
+
+            vTaskDelay(pdMS_TO_TICKS(1));
+
+            MotorCmdA1 cmd2;
+            cmd2.id = current_motor_2.motor_id;
+            cmd2.mode = current_motor_2.motor_mode;
+            cmd2.pos = current_motor_2.motor_pos;
+            cmd2.vel = current_motor_2.motor_vel;
+            cmd2.t = current_motor_2.motor_t;
+            cmd2.kp = current_motor_2.motor_kp;
+            cmd2.kd = current_motor_2.motor_kd;
+            MotorDataA1 dummy2{};
+            motor_driver.sendRecv(cmd2, dummy2);
+
+            // 精确时序控制：计算剩余需要等待的时间
+            if (next_interval_ms > 0) {
+                int64_t elapsed_us = esp_timer_get_time() - sample_start_time;
+                int32_t remaining_ms = next_interval_ms - (int32_t)(elapsed_us / 1000);
+                if (remaining_ms > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(remaining_ms));
+                }
+            }
+            // 跳过循环末尾的固定延时
+            continue;
+        }
+        // ==================== 正常模式：使用真实电机反馈 ====================
+        else if (!is_replay_mode) {
+            // 控制电机1
+            MotorCmdA1 cmd1;
+            cmd1.id = current_motor_1.motor_id;
+            cmd1.mode = current_motor_1.motor_mode;
+            cmd1.pos = current_motor_1.motor_pos;
+            cmd1.vel = current_motor_1.motor_vel;
+            cmd1.t = current_motor_1.motor_t;
+            cmd1.kp = current_motor_1.motor_kp;
+            cmd1.kd = current_motor_1.motor_kd;
+
+            esp_err_t err1 = motor_driver.sendRecv(cmd1, motor_data_1);
+            if (err1 == ESP_OK) {
+                uint32_t timestamp = esp_timer_get_time() / 1000;
+                position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(1));
+
+            // 控制电机2
+            MotorCmdA1 cmd2;
+            cmd2.id = current_motor_2.motor_id;
+            cmd2.mode = current_motor_2.motor_mode;
+            cmd2.pos = current_motor_2.motor_pos;
+            cmd2.vel = current_motor_2.motor_vel;
+            cmd2.t = current_motor_2.motor_t;
+            cmd2.kp = current_motor_2.motor_kp;
+            cmd2.kd = current_motor_2.motor_kd;
+
+            esp_err_t err2 = motor_driver.sendRecv(cmd2, motor_data_2);
+            if (err2 == ESP_OK) {
+                uint32_t timestamp = esp_timer_get_time() / 1000;
+                position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
+            }
+        } else {
+            // 回放模式但没有数据，等待
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));
-
-        // 控制电机2
-        MotorCmdA1 cmd2;
-        cmd2.id = current_motor_2.motor_id;
-        cmd2.mode = current_motor_2.motor_mode;
-        cmd2.pos = current_motor_2.motor_pos;
-        cmd2.vel = current_motor_2.motor_vel;
-        cmd2.t = current_motor_2.motor_t;
-        cmd2.kp = current_motor_2.motor_kp;
-        cmd2.kd = current_motor_2.motor_kd;
-
-        esp_err_t err2 = motor_driver.sendRecv(cmd2, motor_data_2);
-        if (err2 == ESP_OK) {
-            uint32_t timestamp = esp_timer_get_time() / 1000;
-            position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
-        }
-
-        // 波形分析与速度跟随
-        if (err1 == ESP_OK && err2 == ESP_OK) {
+        // 波形分析与速度跟随（仅正常模式执行，回放模式已在上面直接注入状态）
+        if (!is_replay_mode) {
             wave_analysis_result_t motor1_wave, motor2_wave;
             float motor1_diff = 0.0f, motor2_diff = 0.0f;
             uint32_t timestamp = esp_timer_get_time() / 1000;

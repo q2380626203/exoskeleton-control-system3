@@ -1,4 +1,5 @@
 #include "tcp_data_upload.h"
+#include "tcp_replay_receive.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -60,6 +61,10 @@ static bool s_tcp_connected = false;
 static bool s_upload_running = false;
 static TaskHandle_t s_upload_task_handle = NULL;
 
+/* TCP接收缓冲区（用于接收回放数据） */
+static uint8_t s_tcp_rx_buffer[2048];
+static int s_tcp_rx_len = 0;
+
 #if defined(ENABLE_WIFI_LAN_TCP)
 /* TCP连接状态 - 局域网 */
 static int s_tcp_lan_socket = -1;
@@ -110,6 +115,7 @@ static volatile bool s_time_synced = false;
 /* 前向声明 */
 static void clear_data_buffers(void);
 static esp_err_t tcp_time_sync(void);
+static void tcp_check_receive(void);
 #if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传前向声明 */
 #endif
@@ -433,7 +439,89 @@ static esp_err_t tcp_connect_to_server(void)
 
     s_tcp_connected = true;
     // ESP_LOGI(TAG, "TCP公网服务器连接成功");  // 运行时日志已禁用
+
+    /* 设置接收超时为非阻塞检查 */
+    struct timeval rx_timeout;
+    rx_timeout.tv_sec = 0;
+    rx_timeout.tv_usec = 1000;  /* 1ms */
+    setsockopt(s_tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &rx_timeout, sizeof(rx_timeout));
+
     return ESP_OK;
+}
+
+/**
+ * @brief 检查TCP接收数据（非阻塞）
+ * @note 处理服务器发来的回放数据
+ */
+static void tcp_check_receive(void)
+{
+    if (!s_tcp_connected || s_tcp_socket < 0) {
+        return;
+    }
+
+    /* 非阻塞接收 */
+    int recv_len = recv(s_tcp_socket, s_tcp_rx_buffer + s_tcp_rx_len,
+                        sizeof(s_tcp_rx_buffer) - s_tcp_rx_len, MSG_DONTWAIT);
+
+    if (recv_len > 0) {
+        s_tcp_rx_len += recv_len;
+
+        /* 处理接收到的数据 */
+        int offset = 0;
+        while (offset < s_tcp_rx_len) {
+            int processed = tcp_replay_process_data(s_tcp_rx_buffer + offset,
+                                                     s_tcp_rx_len - offset);
+            if (processed > 0) {
+                offset += processed;
+            } else if (processed == 0) {
+                /* 不是回放数据包，跳过一个字节继续查找 */
+                offset++;
+            } else {
+                /* 数据不完整，等待更多数据 */
+                break;
+            }
+        }
+
+        /* 移动剩余数据到缓冲区头部 */
+        if (offset > 0 && offset < s_tcp_rx_len) {
+            memmove(s_tcp_rx_buffer, s_tcp_rx_buffer + offset, s_tcp_rx_len - offset);
+            s_tcp_rx_len -= offset;
+        } else if (offset >= s_tcp_rx_len) {
+            s_tcp_rx_len = 0;
+        }
+    } else if (recv_len == 0) {
+        /* 连接关闭 */
+        s_tcp_connected = false;
+    }
+    /* recv_len < 0 且 errno == EAGAIN/EWOULDBLOCK 表示无数据，正常 */
+}
+
+/**
+ * @brief 检查并发送回放数据请求（当缓冲区数据不足时）
+ */
+static void tcp_check_send_replay_request(void)
+{
+    if (!s_tcp_connected || s_tcp_socket < 0) {
+        return;
+    }
+
+    /* 检查是否需要请求更多数据 */
+    if (!tcp_replay_need_more_data()) {
+        return;
+    }
+
+    /* 构建请求包 */
+    uint8_t request_buf[16];
+    int request_len = tcp_replay_build_request_packet(request_buf, sizeof(request_buf));
+    if (request_len <= 0) {
+        return;
+    }
+
+    /* 填充device_id */
+    request_buf[2] = s_device_id;
+
+    /* 发送请求 */
+    send(s_tcp_socket, request_buf, request_len, 0);
 }
 
 #if defined(ENABLE_WIFI_LAN_TCP)
@@ -1000,6 +1088,12 @@ static void tcp_upload_task(void *pvParameters)
         }
 #endif
 
+        /* 检查TCP接收数据（回放数据） */
+        tcp_check_receive();
+
+        /* 检查是否需要请求更多回放数据 */
+        tcp_check_send_replay_request();
+
         /* 检查是否有数据待发送 */
         if (s_pending_count > 0) {
             /* 填充数据包（公网、局域网、串口透传共用同一个包） */
@@ -1079,6 +1173,7 @@ esp_err_t tcp_data_upload_init(void)
     s_write_index = 0;
     s_send_buf_idx = 0;
     s_pending_count = 0;
+    s_tcp_rx_len = 0;
 
     /* 创建互斥锁 */
     s_buffer_mutex = xSemaphoreCreateMutex();
@@ -1086,6 +1181,9 @@ esp_err_t tcp_data_upload_init(void)
         // ESP_LOGE(TAG, "创建互斥锁失败");  // 运行时日志已禁用
         return ESP_FAIL;
     }
+
+    /* 初始化回放模块 */
+    tcp_replay_init();
 
     // ESP_LOGI(TAG, "TCP数据上传模块初始化完成");  // 运行时日志已禁用
     // ESP_LOGI(TAG, "数据包大小: %d 字节, 缓冲区数量: %d", sizeof(tcp_data_packet_t), BUFFER_COUNT);  // 运行时日志已禁用

@@ -1029,17 +1029,6 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
-# ESP-NN
-#
-# default:
-# CONFIG_NN_ANSI_C is not set
-# default:
-CONFIG_NN_OPTIMIZED=y
-# default:
-CONFIG_NN_OPTIMIZATIONS=1
-# end of ESP-NN
-
-#
 # Compiler options
 #
 CONFIG_COMPILER_OPTIMIZATION_DEBUG=y

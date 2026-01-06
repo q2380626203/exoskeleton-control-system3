@@ -23,32 +23,33 @@ typedef enum {
     SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
     SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
     SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
-    SPEED_FOLLOW_PHASE2             // 第二阶段：压腿动作（0.6s）
+    SPEED_FOLLOW_PHASE2,            // 第二阶段：压腿动作（0.6s）
+    SPEED_FOLLOW_PHASE3             // 第三阶段：压腿衰减（速度从峰值衰减到目标值）
 } speed_follow_state_t;
 
 // 速度跟随模式配置
 typedef struct {
     float trigger_speed;    // 触发速度阈值
-    uint32_t phase1_duration_ms;  // 第一阶段持续时间
-    uint32_t phase2_duration_ms;  // 第二阶段持续时间
     uint32_t waiting_duration_ms; // 等待状态持续时间
     uint32_t idle_duration_ms;    // 空闲状态持续时间
 
     // 第一阶段参数 (mode, pos, vel, torque, kp, kd)
+    // vel: 用于指示正确的速度方向（正/负），实际速度由实时反馈动态计算
     struct {
         uint8_t mode;
         float pos;
-        float vel;
+        float vel;      // 方向参考：电机1为正，电机2为负
         float torque;
         float kp;
         float kd;
     } phase1;
 
     // 第二阶段参数
+    // vel: 用于指示正确的速度方向（正/负），实际速度由实时反馈动态计算
     struct {
         uint8_t mode;
         float pos;
-        float vel;
+        float vel;      // 方向参考：电机1为负，电机2为正
         float torque;
         float kp;
         float kd;
@@ -63,6 +64,16 @@ typedef struct {
         float kp;
         float kd;
     } idle;
+
+    // 被动状态参数（另一个电机处于抬腿/压腿时使用）
+    struct {
+        uint8_t mode;
+        float pos;
+        float vel;
+        float torque;
+        float kp;
+        float kd;
+    } passive;
 } speed_follow_config_t;
 
 // IMU滑动窗口数据结构
@@ -109,6 +120,12 @@ public:
 
     // 按键触发进入按键等待状态
     void startButtonWaiting();
+
+    // 直接进入AI运行状态（用于回放模式）
+    void startAIRunning();
+
+    // 停止AI运行状态（用于回放模式退出）
+    void stopAIRunning();
 
     // Web接口：获取电机配置
     speed_follow_config_t* getMotorConfig(int motor) {
@@ -199,12 +216,17 @@ private:
     uint32_t _phase1_timeout_ms;    // PHASE1超时时间（默认500ms）
     uint32_t _phase2_timeout_ms;    // PHASE2超时时间（默认350ms）
     float _velocity_scale;          // 速度缩放因子（默认0.8）
+    float _velocity_limit;          // 速度跟随限幅（默认20 rad/s）
     float _phase2_vel_threshold;    // PHASE2完成速度阈值（默认0.5 rad/s）
 
     // PHASE2峰值检测参数
     float _phase2_peak_velocity;    // PHASE2阶段的速度峰值（绝对值）
     uint32_t _phase2_peak_time;     // 速度峰值出现的时间
-    float _phase2_decrease_ratio;   // 速度下降比例阈值（默认0.8，即峰值的80%时判定为完成）
+
+    // PHASE3压腿衰减参数
+    float _phase3_decay_target;         // 衰减目标速度（默认5.0）
+    float _phase3_current_velocity;     // 当前衰减速度
+    uint8_t _phase3_pressing_motor;     // PHASE3阶段正在压腿的电机（1或2）
 
     // 电机1全局参数指针
     uint8_t* _motor1_id;

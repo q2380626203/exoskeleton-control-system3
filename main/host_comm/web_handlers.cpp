@@ -134,12 +134,6 @@ extern "C" esp_err_t handle_web_motor_param(int motor, const char *param_name, f
     if (strcmp(param_name, "trigger_speed") == 0) {
         config->trigger_speed = value;
     }
-    else if (strcmp(param_name, "phase1_duration") == 0) {
-        config->phase1_duration_ms = (uint32_t)value;
-    }
-    else if (strcmp(param_name, "phase2_duration") == 0) {
-        config->phase2_duration_ms = (uint32_t)value;
-    }
     else if (strcmp(param_name, "waiting_duration") == 0) {
         config->waiting_duration_ms = (uint32_t)value;
     }
@@ -192,12 +186,6 @@ extern "C" esp_err_t handle_web_get_motor_param(int motor, const char *param_nam
 
     if (strcmp(param_name, "trigger_speed") == 0) {
         *value = config->trigger_speed;
-    }
-    else if (strcmp(param_name, "phase1_duration") == 0) {
-        *value = (float)config->phase1_duration_ms;
-    }
-    else if (strcmp(param_name, "phase2_duration") == 0) {
-        *value = (float)config->phase2_duration_ms;
     }
     else if (strcmp(param_name, "waiting_duration") == 0) {
         *value = (float)config->waiting_duration_ms;

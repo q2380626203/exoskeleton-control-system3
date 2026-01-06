@@ -1,0 +1,4 @@
+服务端
+frps.exe -c frps.toml
+客户端
+frpc.exe -c frpc.toml
