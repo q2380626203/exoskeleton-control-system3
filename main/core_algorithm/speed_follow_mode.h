@@ -16,15 +16,14 @@ typedef enum {
 
 // 速度跟随模式状态
 typedef enum {
-    SPEED_FOLLOW_IDLE,              // 空闲周期（300ms）
-    SPEED_FOLLOW_WAITING,           // 等待状态：阈值触发后等待300ms检测另一电机速度
+    SPEED_FOLLOW_IDLE,              // 空闲周期
+    SPEED_FOLLOW_WAITING,           // 等待状态：阈值触发后等待检测另一电机速度
     SPEED_FOLLOW_BUTTON_WAITING,    // 按键触发等待状态：同时检测两个电机速度，谁先触发就进入谁的工作状态
-    SPEED_FOLLOW_AI_RUNNING,        // AI模式运行状态：同时控制双腿，双腿都静止4s后退出
+    SPEED_FOLLOW_AI_RUNNING,        // AI模式运行状态：同时控制双腿
     SPEED_FOLLOW_MOTOR1_WORKING,    // 1号电机工作（检测+v）
     SPEED_FOLLOW_MOTOR2_WORKING,    // 2号电机工作（检测-v）
-    SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作（0.6s）
-    SPEED_FOLLOW_PHASE2,            // 第二阶段：压腿动作（0.6s）
-    SPEED_FOLLOW_PHASE3             // 第三阶段：压腿衰减（速度从峰值衰减到目标值）
+    SPEED_FOLLOW_PHASE1,            // 第一阶段：抬腿动作
+    SPEED_FOLLOW_PHASE2             // 第二阶段：压腿动作
 } speed_follow_state_t;
 
 // 速度跟随模式配置
@@ -188,6 +187,23 @@ public:
     // IMU滑动窗口数据更新（从main.cpp调用）
     void updateRollValue(float roll_left, float roll_right, bool left_valid, bool right_valid);
 
+    // ===== 公共参数访问接口（用于TCP参数调整） =====
+    // 速度缩放因子
+    float getVelocityScale() const { return _velocity_scale; }
+    void setVelocityScale(float scale) { _velocity_scale = scale; }
+
+    // 速度限幅
+    float getVelocityLimit() const { return _velocity_limit; }
+    void setVelocityLimit(float limit) { _velocity_limit = limit; }
+
+    // PHASE1超时时间（ms）
+    uint32_t getPhase1Timeout() const { return _phase1_timeout_ms; }
+    void setPhase1Timeout(uint32_t timeout_ms) { _phase1_timeout_ms = timeout_ms; }
+
+    // PHASE2超时时间（ms）
+    uint32_t getPhase2Timeout() const { return _phase2_timeout_ms; }
+    void setPhase2Timeout(uint32_t timeout_ms) { _phase2_timeout_ms = timeout_ms; }
+
 private:
     speed_follow_state_t _state;
     speed_follow_config_t _config_motor1;  // 电机1配置
@@ -222,11 +238,6 @@ private:
     // PHASE2峰值检测参数
     float _phase2_peak_velocity;    // PHASE2阶段的速度峰值（绝对值）
     uint32_t _phase2_peak_time;     // 速度峰值出现的时间
-
-    // PHASE3压腿衰减参数
-    float _phase3_decay_target;         // 衰减目标速度（默认5.0）
-    float _phase3_current_velocity;     // 当前衰减速度
-    uint8_t _phase3_pressing_motor;     // PHASE3阶段正在压腿的电机（1或2）
 
     // 电机1全局参数指针
     uint8_t* _motor1_id;

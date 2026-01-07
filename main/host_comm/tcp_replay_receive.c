@@ -77,6 +77,27 @@ static volatile uint32_t s_total_received = 0;
 static volatile uint32_t s_total_played = 0;
 static volatile uint32_t s_packets_received = 0;
 
+/* ==================== 参数回调和响应缓存 ==================== */
+
+static tcp_replay_param_set_cb_t s_param_set_cb = NULL;
+static tcp_replay_param_get_cb_t s_param_get_cb = NULL;
+
+/* 待发送的参数响应缓存 */
+#define PARAM_RESPONSE_BUFFER_SIZE 128
+static uint8_t s_pending_response[PARAM_RESPONSE_BUFFER_SIZE];
+static volatile int s_pending_response_len = 0;
+
+/* 所有支持的参数ID列表 */
+static const uint8_t s_all_param_ids[] = {
+    PARAM_M1_TRIGGER_SPEED, PARAM_M1_PHASE1_TORQUE, PARAM_M1_PHASE1_KD,
+    PARAM_M1_PHASE2_TORQUE, PARAM_M1_PHASE2_KD, PARAM_M1_PASSIVE_KD,
+    PARAM_M2_TRIGGER_SPEED, PARAM_M2_PHASE1_TORQUE, PARAM_M2_PHASE1_KD,
+    PARAM_M2_PHASE2_TORQUE, PARAM_M2_PHASE2_KD, PARAM_M2_PASSIVE_KD,
+    PARAM_VELOCITY_SCALE, PARAM_VELOCITY_LIMIT, PARAM_PHASE1_TIMEOUT,
+    PARAM_PHASE2_TIMEOUT
+};
+#define ALL_PARAM_COUNT (sizeof(s_all_param_ids) / sizeof(s_all_param_ids[0]))
+
 /* ==================== CRC8校验 ==================== */
 
 static const uint8_t crc8_table[256] = {
@@ -241,6 +262,69 @@ static void handle_command(uint8_t cmd)
     }
 }
 
+/**
+ * @brief 处理参数设置命令
+ * @param data 数据指针（从包头开始）
+ * @param len 数据长度
+ */
+static void handle_set_param(const uint8_t *data, size_t len)
+{
+    const replay_packet_header_t *header = (const replay_packet_header_t *)data;
+    uint8_t count = header->count;
+
+    if (count == 0 || s_param_set_cb == NULL) {
+        return;
+    }
+
+    /* 计算预期包大小: 14字节包头 + count*5字节参数数据 + 1字节CRC */
+    size_t expected_size = HEADER_SIZE + count * 5 + 1;
+    if (len < expected_size) {
+        return;
+    }
+
+    /* 解析并设置参数 */
+    const uint8_t *param_data = data + HEADER_SIZE;
+    for (int i = 0; i < count; i++) {
+        uint8_t param_id = param_data[i * 5];
+        float value;
+        memcpy(&value, &param_data[i * 5 + 1], sizeof(float));
+        s_param_set_cb(param_id, value);
+    }
+}
+
+/**
+ * @brief 处理参数查询命令并构建响应
+ * @param data 数据指针（从包头开始）
+ * @param len 数据长度
+ */
+static void handle_query_param(const uint8_t *data, size_t len)
+{
+    if (s_param_get_cb == NULL) {
+        return;
+    }
+
+    const replay_packet_header_t *header = (const replay_packet_header_t *)data;
+    uint8_t count = header->count;
+
+    const uint8_t *query_ids;
+    uint8_t query_count;
+
+    if (count == 0) {
+        /* 查询所有参数 */
+        query_ids = s_all_param_ids;
+        query_count = ALL_PARAM_COUNT;
+    } else {
+        /* 查询指定参数 */
+        query_ids = data + HEADER_SIZE;
+        query_count = count;
+    }
+
+    /* 构建响应包 */
+    s_pending_response_len = tcp_replay_build_param_response(
+        s_pending_response, PARAM_RESPONSE_BUFFER_SIZE,
+        query_ids, query_count);
+}
+
 /* ==================== 公共接口实现 ==================== */
 
 esp_err_t tcp_replay_init(void)
@@ -281,9 +365,19 @@ int tcp_replay_process_data(const uint8_t *data, size_t len)
     bool is_last = (header->flags & REPLAY_FLAG_LAST) != 0;
     uint8_t count = header->count;
 
-    /* 计算包大小 */
-    size_t sample_size = has_roll ? SAMPLE_SIZE_WITH_ROLL : SAMPLE_SIZE_NO_ROLL;
-    size_t expected_size = HEADER_SIZE + count * sample_size + 1;  /* +1 for CRC */
+    /* 根据命令类型计算包大小 */
+    size_t expected_size;
+    if (cmd == REPLAY_CMD_SET_PARAM) {
+        /* 参数设置包: 14字节包头 + count*5字节参数数据 + 1字节CRC */
+        expected_size = HEADER_SIZE + count * 5 + 1;
+    } else if (cmd == REPLAY_CMD_QUERY_PARAM) {
+        /* 参数查询包: 14字节包头 + count*1字节参数ID + 1字节CRC */
+        expected_size = HEADER_SIZE + count * 1 + 1;
+    } else {
+        /* 数据包或其他命令包 */
+        size_t sample_size = has_roll ? SAMPLE_SIZE_WITH_ROLL : SAMPLE_SIZE_NO_ROLL;
+        expected_size = HEADER_SIZE + count * sample_size + 1;  /* +1 for CRC */
+    }
 
     if (len < expected_size) {
         return -1;  /* 数据不完整 */
@@ -298,7 +392,13 @@ int tcp_replay_process_data(const uint8_t *data, size_t len)
 
     /* 处理命令 */
     if (cmd != REPLAY_CMD_DATA) {
-        handle_command(cmd);
+        if (cmd == REPLAY_CMD_SET_PARAM) {
+            handle_set_param(data, len);
+        } else if (cmd == REPLAY_CMD_QUERY_PARAM) {
+            handle_query_param(data, len);
+        } else {
+            handle_command(cmd);
+        }
         return expected_size;
     }
 
@@ -528,4 +628,86 @@ int tcp_replay_build_request_packet(uint8_t *buffer, size_t buffer_size)
     buffer[14] = calc_crc8(buffer, 14);
 
     return 15;
+}
+
+void tcp_replay_set_param_set_callback(tcp_replay_param_set_cb_t cb)
+{
+    s_param_set_cb = cb;
+}
+
+void tcp_replay_set_param_get_callback(tcp_replay_param_get_cb_t cb)
+{
+    s_param_get_cb = cb;
+}
+
+int tcp_replay_build_param_response(uint8_t *buffer, size_t buffer_size,
+                                     const uint8_t *param_ids, uint8_t count)
+{
+    if (buffer == NULL || s_param_get_cb == NULL || count == 0) {
+        return 0;
+    }
+
+    /* 响应包格式：14字节包头 + count*5字节参数数据 + 1字节CRC */
+    size_t required_size = HEADER_SIZE + count * 5 + 1;
+    if (buffer_size < required_size) {
+        return 0;
+    }
+
+    static uint8_t s_response_seq = 0;
+
+    /* 构建包头 */
+    buffer[0] = REPLAY_MAGIC & 0xFF;
+    buffer[1] = (REPLAY_MAGIC >> 8) & 0xFF;
+    buffer[2] = 0;  /* device_id */
+    buffer[3] = 10; /* version */
+    buffer[4] = s_response_seq++;
+    buffer[5] = REPLAY_CMD_PARAM_RESPONSE;  /* flags: 参数响应 */
+    buffer[6] = count;
+    buffer[7] = 0;  /* reserved */
+
+    /* base_timestamp (6字节, 当前时间) */
+    uint64_t current_time_ms = esp_timer_get_time() / 1000;
+    buffer[8] = (current_time_ms >> 0) & 0xFF;
+    buffer[9] = (current_time_ms >> 8) & 0xFF;
+    buffer[10] = (current_time_ms >> 16) & 0xFF;
+    buffer[11] = (current_time_ms >> 24) & 0xFF;
+    buffer[12] = (current_time_ms >> 32) & 0xFF;
+    buffer[13] = (current_time_ms >> 40) & 0xFF;
+
+    /* 填充参数数据 */
+    uint8_t *param_data = buffer + HEADER_SIZE;
+    for (int i = 0; i < count; i++) {
+        uint8_t param_id = param_ids[i];
+        float value = s_param_get_cb(param_id);
+
+        param_data[i * 5] = param_id;
+        memcpy(&param_data[i * 5 + 1], &value, sizeof(float));
+    }
+
+    /* 计算CRC8 */
+    buffer[required_size - 1] = calc_crc8(buffer, required_size - 1);
+
+    return (int)required_size;
+}
+
+bool tcp_replay_has_pending_response(void)
+{
+    return s_pending_response_len > 0;
+}
+
+int tcp_replay_get_pending_response(uint8_t *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || s_pending_response_len == 0) {
+        return 0;
+    }
+
+    if (buffer_size < (size_t)s_pending_response_len) {
+        return 0;
+    }
+
+    int len = s_pending_response_len;
+    memcpy(buffer, s_pending_response, len);
+    s_pending_response_len = 0;  /* 清除待发送标志 */
+
+    return len;
 }

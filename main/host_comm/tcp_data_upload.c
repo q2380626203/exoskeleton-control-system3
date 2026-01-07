@@ -116,6 +116,7 @@ static volatile bool s_time_synced = false;
 static void clear_data_buffers(void);
 static esp_err_t tcp_time_sync(void);
 static void tcp_check_receive(void);
+static uint8_t calc_crc8(const uint8_t *data, size_t len);
 #if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传前向声明 */
 #endif
@@ -488,6 +489,19 @@ static void tcp_check_receive(void)
             s_tcp_rx_len -= offset;
         } else if (offset >= s_tcp_rx_len) {
             s_tcp_rx_len = 0;
+        }
+
+        /* 检查是否有待发送的参数响应 */
+        if (tcp_replay_has_pending_response()) {
+            uint8_t response_buf[128];
+            int response_len = tcp_replay_get_pending_response(response_buf, sizeof(response_buf));
+            if (response_len > 0) {
+                /* 填充device_id后需要重新计算CRC */
+                response_buf[2] = s_device_id;
+                /* 重新计算CRC8（CRC是最后一个字节） */
+                response_buf[response_len - 1] = calc_crc8(response_buf, response_len - 1);
+                send(s_tcp_socket, response_buf, response_len, 0);
+            }
         }
     } else if (recv_len == 0) {
         /* 连接关闭 */

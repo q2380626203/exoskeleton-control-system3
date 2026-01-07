@@ -72,6 +72,71 @@ motor_position_buffers_t position_buffers;
 SemaphoreHandle_t motor_params_mutex;
 float global_speed_follow_threshold = 6.0f;
 
+// ==================== 参数回调函数 ====================
+/**
+ * @brief 参数设置回调（TCP回放协议调用）
+ */
+static void param_set_callback(uint8_t param_id, float value)
+{
+    speed_follow_config_t *m1_cfg = speed_follow.getMotorConfig(1);
+    speed_follow_config_t *m2_cfg = speed_follow.getMotorConfig(2);
+
+    switch (param_id) {
+        // 电机1参数
+        case PARAM_M1_TRIGGER_SPEED:    m1_cfg->trigger_speed = value; break;
+        case PARAM_M1_PHASE1_TORQUE:    m1_cfg->phase1.torque = value; break;
+        case PARAM_M1_PHASE1_KD:        m1_cfg->phase1.kd = value; break;
+        case PARAM_M1_PHASE2_TORQUE:    m1_cfg->phase2.torque = value; break;
+        case PARAM_M1_PHASE2_KD:        m1_cfg->phase2.kd = value; break;
+        case PARAM_M1_PASSIVE_KD:       m1_cfg->passive.kd = value; break;
+        // 电机2参数
+        case PARAM_M2_TRIGGER_SPEED:    m2_cfg->trigger_speed = value; break;
+        case PARAM_M2_PHASE1_TORQUE:    m2_cfg->phase1.torque = value; break;
+        case PARAM_M2_PHASE1_KD:        m2_cfg->phase1.kd = value; break;
+        case PARAM_M2_PHASE2_TORQUE:    m2_cfg->phase2.torque = value; break;
+        case PARAM_M2_PHASE2_KD:        m2_cfg->phase2.kd = value; break;
+        case PARAM_M2_PASSIVE_KD:       m2_cfg->passive.kd = value; break;
+        // 公共参数
+        case PARAM_VELOCITY_SCALE:      speed_follow.setVelocityScale(value); break;
+        case PARAM_VELOCITY_LIMIT:      speed_follow.setVelocityLimit(value); break;
+        case PARAM_PHASE1_TIMEOUT:      speed_follow.setPhase1Timeout((uint32_t)value); break;
+        case PARAM_PHASE2_TIMEOUT:      speed_follow.setPhase2Timeout((uint32_t)value); break;
+        default: break;
+    }
+}
+
+/**
+ * @brief 参数查询回调（TCP回放协议调用）
+ */
+static float param_get_callback(uint8_t param_id)
+{
+    speed_follow_config_t *m1_cfg = speed_follow.getMotorConfig(1);
+    speed_follow_config_t *m2_cfg = speed_follow.getMotorConfig(2);
+
+    switch (param_id) {
+        // 电机1参数
+        case PARAM_M1_TRIGGER_SPEED:    return m1_cfg->trigger_speed;
+        case PARAM_M1_PHASE1_TORQUE:    return m1_cfg->phase1.torque;
+        case PARAM_M1_PHASE1_KD:        return m1_cfg->phase1.kd;
+        case PARAM_M1_PHASE2_TORQUE:    return m1_cfg->phase2.torque;
+        case PARAM_M1_PHASE2_KD:        return m1_cfg->phase2.kd;
+        case PARAM_M1_PASSIVE_KD:       return m1_cfg->passive.kd;
+        // 电机2参数
+        case PARAM_M2_TRIGGER_SPEED:    return m2_cfg->trigger_speed;
+        case PARAM_M2_PHASE1_TORQUE:    return m2_cfg->phase1.torque;
+        case PARAM_M2_PHASE1_KD:        return m2_cfg->phase1.kd;
+        case PARAM_M2_PHASE2_TORQUE:    return m2_cfg->phase2.torque;
+        case PARAM_M2_PHASE2_KD:        return m2_cfg->phase2.kd;
+        case PARAM_M2_PASSIVE_KD:       return m2_cfg->passive.kd;
+        // 公共参数
+        case PARAM_VELOCITY_SCALE:      return speed_follow.getVelocityScale();
+        case PARAM_VELOCITY_LIMIT:      return speed_follow.getVelocityLimit();
+        case PARAM_PHASE1_TIMEOUT:      return (float)speed_follow.getPhase1Timeout();
+        case PARAM_PHASE2_TIMEOUT:      return (float)speed_follow.getPhase2Timeout();
+        default: return 0.0f;
+    }
+}
+
 // ==================== 电机参数 ====================
 struct MotorParams {
     uint8_t motor_id;
@@ -109,6 +174,10 @@ void motor_control_task(void *pvParameters) {
         &global_motor_2.motor_vel, &global_motor_2.motor_t, &global_motor_2.motor_kp, &global_motor_2.motor_kd,
         motor_params_mutex);
     speed_follow.setDiffBuffers(&position_buffers);
+
+    // 注册TCP回放参数回调
+    tcp_replay_set_param_set_callback(param_set_callback);
+    tcp_replay_set_param_get_callback(param_get_callback);
 
     // 局部变量
     uint32_t loop_count = 0;

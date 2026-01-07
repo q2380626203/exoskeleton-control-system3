@@ -20,6 +20,30 @@ extern "C" {
 #define REPLAY_CMD_STOP         0x20    /* 停止回放 */
 #define REPLAY_CMD_PAUSE        0x30    /* 暂停回放 */
 #define REPLAY_CMD_REQUEST      0x40    /* 请求更多数据 (ESP32->Server) */
+#define REPLAY_CMD_SET_PARAM    0x50    /* 设置参数 (Server->ESP32) */
+#define REPLAY_CMD_QUERY_PARAM  0x60    /* 查询参数 (Server->ESP32) */
+#define REPLAY_CMD_PARAM_RESPONSE 0x70  /* 参数响应 (ESP32->Server) */
+
+/* 参数ID定义 */
+/* 电机1参数 (0x00 - 0x1F) */
+#define PARAM_M1_TRIGGER_SPEED     0x00
+#define PARAM_M1_PHASE1_TORQUE     0x01
+#define PARAM_M1_PHASE1_KD         0x02
+#define PARAM_M1_PHASE2_TORQUE     0x03
+#define PARAM_M1_PHASE2_KD         0x04
+#define PARAM_M1_PASSIVE_KD        0x05
+/* 电机2参数 (0x20 - 0x3F) */
+#define PARAM_M2_TRIGGER_SPEED     0x20
+#define PARAM_M2_PHASE1_TORQUE     0x21
+#define PARAM_M2_PHASE1_KD         0x22
+#define PARAM_M2_PHASE2_TORQUE     0x23
+#define PARAM_M2_PHASE2_KD         0x24
+#define PARAM_M2_PASSIVE_KD        0x25
+/* 公共参数 (0x40 - 0x5F) */
+#define PARAM_VELOCITY_SCALE       0x40
+#define PARAM_VELOCITY_LIMIT       0x41
+#define PARAM_PHASE1_TIMEOUT       0x42
+#define PARAM_PHASE2_TIMEOUT       0x43
 
 /* 标志位（flags低4位） */
 #define REPLAY_FLAG_LAST        0x01    /* 最后一包 */
@@ -121,6 +145,57 @@ bool tcp_replay_need_more_data(void);
  * @return 请求包大小，失败返回0
  */
 int tcp_replay_build_request_packet(uint8_t *buffer, size_t buffer_size);
+
+/**
+ * @brief 参数设置回调函数类型
+ * @param param_id 参数ID
+ * @param value 参数值
+ */
+typedef void (*tcp_replay_param_set_cb_t)(uint8_t param_id, float value);
+
+/**
+ * @brief 参数查询回调函数类型
+ * @param param_id 参数ID
+ * @return 参数当前值
+ */
+typedef float (*tcp_replay_param_get_cb_t)(uint8_t param_id);
+
+/**
+ * @brief 设置参数设置回调函数
+ * @param cb 回调函数
+ */
+void tcp_replay_set_param_set_callback(tcp_replay_param_set_cb_t cb);
+
+/**
+ * @brief 设置参数查询回调函数
+ * @param cb 回调函数
+ */
+void tcp_replay_set_param_get_callback(tcp_replay_param_get_cb_t cb);
+
+/**
+ * @brief 构建参数响应包
+ * @param buffer 输出缓冲区
+ * @param buffer_size 缓冲区大小
+ * @param param_ids 要响应的参数ID列表
+ * @param count 参数个数，0表示响应所有参数
+ * @return 响应包大小，失败返回0
+ */
+int tcp_replay_build_param_response(uint8_t *buffer, size_t buffer_size,
+                                     const uint8_t *param_ids, uint8_t count);
+
+/**
+ * @brief 检查是否有待发送的参数响应包
+ * @return true有待发送响应，false无
+ */
+bool tcp_replay_has_pending_response(void);
+
+/**
+ * @brief 获取待发送的参数响应包
+ * @param buffer 输出缓冲区
+ * @param buffer_size 缓冲区大小
+ * @return 响应包大小，0表示无待发送
+ */
+int tcp_replay_get_pending_response(uint8_t *buffer, size_t buffer_size);
 
 #ifdef __cplusplus
 }

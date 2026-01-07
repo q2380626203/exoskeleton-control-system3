@@ -63,10 +63,54 @@ CMD_START = 0x10     # 开始回放
 CMD_STOP = 0x20      # 停止回放
 CMD_PAUSE = 0x30     # 暂停回放
 CMD_REQUEST = 0x40   # 请求更多数据 (ESP32->Server)
+CMD_SET_PARAM = 0x50 # 设置参数 (Server->ESP32)
+CMD_QUERY_PARAM = 0x60  # 查询参数 (Server->ESP32)
+CMD_PARAM_RESPONSE = 0x70  # 参数响应 (ESP32->Server)
 
 # 标志位 (flags低4位)
 FLAG_LAST_PACKET = 0x01  # 最后一包
 FLAG_HAS_ROLL = 0x02     # 包含roll数据
+
+# 参数ID定义 (用于SET_PARAM命令)
+# 电机1参数 (0x00 - 0x1F)
+PARAM_M1_TRIGGER_SPEED     = 0x00
+PARAM_M1_PHASE1_TORQUE     = 0x01
+PARAM_M1_PHASE1_KD         = 0x02
+PARAM_M1_PHASE2_TORQUE     = 0x03
+PARAM_M1_PHASE2_KD         = 0x04
+PARAM_M1_PASSIVE_KD        = 0x05
+# 电机2参数 (0x20 - 0x3F)
+PARAM_M2_TRIGGER_SPEED     = 0x20
+PARAM_M2_PHASE1_TORQUE     = 0x21
+PARAM_M2_PHASE1_KD         = 0x22
+PARAM_M2_PHASE2_TORQUE     = 0x23
+PARAM_M2_PHASE2_KD         = 0x24
+PARAM_M2_PASSIVE_KD        = 0x25
+# 公共参数 (0x40 - 0x5F)
+PARAM_VELOCITY_SCALE       = 0x40
+PARAM_VELOCITY_LIMIT       = 0x41
+PARAM_PHASE1_TIMEOUT       = 0x42
+PARAM_PHASE2_TIMEOUT       = 0x43
+
+# 参数ID到名称的映射（用于GUI显示）
+PARAM_NAMES = {
+    PARAM_M1_TRIGGER_SPEED:    ("M1触发速度", 3.0, 0.0, 20.0),
+    PARAM_M1_PHASE1_TORQUE:    ("M1抬腿力矩", 0.7, 0.0, 2.0),
+    PARAM_M1_PHASE1_KD:        ("M1抬腿Kd", 0.08, 0.0, 1.0),
+    PARAM_M1_PHASE2_TORQUE:    ("M1压腿力矩", -1.0, -2.0, 0.0),
+    PARAM_M1_PHASE2_KD:        ("M1压腿Kd", 0.08, 0.0, 1.0),
+    PARAM_M1_PASSIVE_KD:       ("M1被动Kd", 0.05, 0.0, 1.0),
+    PARAM_M2_TRIGGER_SPEED:    ("M2触发速度", -3.0, -20.0, 0.0),
+    PARAM_M2_PHASE1_TORQUE:    ("M2抬腿力矩", -0.7, -2.0, 0.0),
+    PARAM_M2_PHASE1_KD:        ("M2抬腿Kd", 0.08, 0.0, 1.0),
+    PARAM_M2_PHASE2_TORQUE:    ("M2压腿力矩", 1.0, 0.0, 2.0),
+    PARAM_M2_PHASE2_KD:        ("M2压腿Kd", 0.08, 0.0, 1.0),
+    PARAM_M2_PASSIVE_KD:       ("M2被动Kd", 0.05, 0.0, 1.0),
+    PARAM_VELOCITY_SCALE:      ("速度缩放", 0.8, 0.1, 2.0),
+    PARAM_VELOCITY_LIMIT:      ("速度限幅", 50.0, 5.0, 100.0),
+    PARAM_PHASE1_TIMEOUT:      ("抬腿超时ms", 600, 100, 2000),
+    PARAM_PHASE2_TIMEOUT:      ("压腿超时ms", 600, 100, 2000),
+}
 
 # CRC8查表
 CRC8_TABLE = [
@@ -187,6 +231,209 @@ def build_command_packet(cmd_type, device_id=1, seq=0):
     return packet
 
 
+def build_param_packet(param_id, value, device_id=1, seq=0):
+    """
+    构建参数设置包
+    param_id: 参数ID (PARAM_M1_*, PARAM_M2_*, PARAM_*)
+    value: 参数值 (float或int)
+
+    包格式：
+      包头 (14字节):
+        - magic: 0xBB66
+        - device_id: 1
+        - version: 10
+        - seq: 0-255
+        - flags: CMD_SET_PARAM (0x50)
+        - count: 1 (参数个数)
+        - reserved: 0
+        - base_timestamp: 6字节
+      参数数据 (5字节):
+        - param_id: 1字节
+        - value: 4字节 (float, 小端)
+      CRC8: 1字节
+    """
+    flags = CMD_SET_PARAM
+    count = 1  # 1个参数
+
+    # 包头 (14字节)
+    header = struct.pack('<HBBBBBB',
+        REPLAY_MAGIC,
+        device_id,
+        PROTOCOL_VERSION,
+        seq & 0xFF,
+        flags,
+        count,
+        0
+    )
+    # base_timestamp (6字节)
+    base_time_ms = int(time.time() * 1000)
+    header += struct.pack('<Q', base_time_ms)[:6]
+
+    # 参数数据 (5字节: param_id + float value)
+    # 对于超时时间参数，value是整数ms，转换为float存储
+    param_data = struct.pack('<Bf', param_id, float(value))
+
+    # 组合并计算CRC
+    packet_without_crc = header + param_data
+    crc = calc_crc8(packet_without_crc)
+    packet = packet_without_crc + bytes([crc])
+
+    return packet
+
+
+def build_multi_param_packet(params, device_id=1, seq=0):
+    """
+    构建多参数设置包
+    params: [(param_id, value), ...]  最多20个参数
+
+    包格式：
+      包头 (14字节)
+      参数数据 (5字节 × count)
+      CRC8: 1字节
+    """
+    if not params or len(params) > 20:
+        return None
+
+    flags = CMD_SET_PARAM
+    count = len(params)
+
+    # 包头 (14字节)
+    header = struct.pack('<HBBBBBB',
+        REPLAY_MAGIC,
+        device_id,
+        PROTOCOL_VERSION,
+        seq & 0xFF,
+        flags,
+        count,
+        0
+    )
+    # base_timestamp (6字节)
+    base_time_ms = int(time.time() * 1000)
+    header += struct.pack('<Q', base_time_ms)[:6]
+
+    # 参数数据 (5字节 × count)
+    param_data = b''
+    for param_id, value in params:
+        param_data += struct.pack('<Bf', param_id, float(value))
+
+    # 组合并计算CRC
+    packet_without_crc = header + param_data
+    crc = calc_crc8(packet_without_crc)
+    packet = packet_without_crc + bytes([crc])
+
+    return packet
+
+
+def build_query_param_packet(param_ids, device_id=1, seq=0):
+    """
+    构建参数查询包
+    param_ids: [param_id, ...]  要查询的参数ID列表，最多20个
+               如果为空列表，则查询所有参数
+
+    包格式：
+      包头 (14字节):
+        - magic: 0xBB66
+        - device_id: 1
+        - version: 10
+        - seq: 0-255
+        - flags: CMD_QUERY_PARAM (0x60)
+        - count: 参数个数 (0=查询所有)
+        - reserved: 0
+        - base_timestamp: 6字节
+      参数ID (1字节 × count)
+      CRC8: 1字节
+    """
+    flags = CMD_QUERY_PARAM
+    count = len(param_ids) if param_ids else 0
+
+    # 包头 (14字节)
+    header = struct.pack('<HBBBBBB',
+        REPLAY_MAGIC,
+        device_id,
+        PROTOCOL_VERSION,
+        seq & 0xFF,
+        flags,
+        count,
+        0
+    )
+    # base_timestamp (6字节)
+    base_time_ms = int(time.time() * 1000)
+    header += struct.pack('<Q', base_time_ms)[:6]
+
+    # 参数ID列表
+    param_data = b''
+    for param_id in param_ids:
+        param_data += struct.pack('<B', param_id)
+
+    # 组合并计算CRC
+    packet_without_crc = header + param_data
+    crc = calc_crc8(packet_without_crc)
+    packet = packet_without_crc + bytes([crc])
+
+    return packet
+
+
+def parse_param_response(data, debug_log=None):
+    """
+    解析参数响应包
+    返回: [(param_id, value), ...] 或 None（解析失败）
+
+    响应包格式：
+      包头 (14字节)
+      参数数据 (5字节 × count): param_id(1) + value(4, float)
+      CRC8: 1字节
+    """
+    if len(data) < 15:
+        if debug_log:
+            debug_log(f"数据太短: {len(data)} < 15")
+        return None
+
+    # 检查Magic
+    magic = data[0] | (data[1] << 8)
+    if magic != REPLAY_MAGIC:
+        if debug_log:
+            debug_log(f"Magic不匹配: 0x{magic:04X} != 0x{REPLAY_MAGIC:04X}")
+        return None
+
+    # 检查命令类型
+    flags = data[5]
+    cmd = flags & 0xF0
+    if cmd != CMD_PARAM_RESPONSE:
+        if debug_log:
+            debug_log(f"命令类型不匹配: 0x{cmd:02X} != 0x{CMD_PARAM_RESPONSE:02X}")
+        return None
+
+    count = data[6]
+    expected_len = 14 + count * 5 + 1  # 包头 + 参数数据 + CRC
+
+    if len(data) < expected_len:
+        if debug_log:
+            debug_log(f"数据长度不足: {len(data)} < {expected_len}")
+        return None
+
+    # 验证CRC
+    crc_calc = calc_crc8(data[:expected_len - 1])
+    crc_recv = data[expected_len - 1]
+    if crc_calc != crc_recv:
+        if debug_log:
+            debug_log(f"CRC校验失败: 计算=0x{crc_calc:02X}, 接收=0x{crc_recv:02X}")
+            # 打印原始数据
+            hex_str = ' '.join(f'{b:02X}' for b in data[:expected_len])
+            debug_log(f"原始数据: {hex_str}")
+        return None
+
+    # 解析参数
+    params = []
+    offset = 14
+    for i in range(count):
+        param_id = data[offset]
+        value = struct.unpack('<f', data[offset + 1:offset + 5])[0]
+        params.append((param_id, value))
+        offset += 5
+
+    return params
+
+
 def build_data_packet(samples, device_id=1, seq=0, is_last=False):
     """
     构建数据包
@@ -294,6 +541,8 @@ class ReplayServer:
         self.log_callback = log_callback
         self.progress_callback = None
         self.status_callback = None
+        self.param_response_callback = None  # 参数响应回调
+        self.current_params = {}  # 当前参数值缓存
 
     def log(self, msg):
         if self.log_callback:
@@ -431,6 +680,12 @@ class ReplayServer:
         # 检查Magic
         magic = data[0] | (data[1] << 8)
         if magic != REPLAY_MAGIC:
+            # 尝试在数据中查找有效的Magic
+            for i in range(len(data) - 14):
+                if data[i] == 0x66 and data[i+1] == 0xBB:
+                    # 找到可能的包头，递归处理
+                    self._parse_request(data[i:])
+                    return
             return
 
         # 检查命令类型
@@ -442,6 +697,20 @@ class ReplayServer:
             # buffer_count = data[8] | (data[9] << 8)  # ESP32当前缓冲区数据量
             self.request_event.set()  # 触发发送
 
+        elif cmd == CMD_PARAM_RESPONSE:
+            # ESP32返回的参数响应
+            params = parse_param_response(data, debug_log=self.log)
+            if params:
+                self.log(f"✓ 收到参数响应: {len(params)} 个参数")
+                # 更新本地缓存的参数值
+                for param_id, value in params:
+                    self.current_params[param_id] = value
+                    param_info = PARAM_NAMES.get(param_id, ("未知参数", 0, 0, 0))
+                    self.log(f"    {param_info[0]} = {value:.4f}")
+                # 触发回调通知GUI更新
+                if self.param_response_callback:
+                    self.param_response_callback(params)
+
     def send_packet(self, packet):
         """发送数据包"""
         if self.client_socket:
@@ -452,6 +721,85 @@ class ReplayServer:
                 self.log(f"发送失败: {e}")
                 return False
         return False
+
+    def send_param(self, param_id, value):
+        """发送单个参数设置包"""
+        if not self.client_socket:
+            self.log("✗ 错误: 无客户端连接")
+            return False
+
+        packet = build_param_packet(param_id, value, seq=self.seq)
+        self.seq += 1
+
+        if self.send_packet(packet):
+            # 获取参数名称
+            param_info = PARAM_NAMES.get(param_id, ("未知参数", 0, 0, 0))
+            self.log(f"→ 已发送参数设置: {param_info[0]} = {value}")
+            # 更新本地缓存
+            self.current_params[param_id] = value
+            return True
+        return False
+
+    def send_params(self, params):
+        """发送多个参数设置包
+        params: [(param_id, value), ...]
+        """
+        if not self.client_socket:
+            self.log("错误: 无客户端连接")
+            return False
+
+        if not params:
+            return False
+
+        packet = build_multi_param_packet(params, seq=self.seq)
+        self.seq += 1
+
+        if packet and self.send_packet(packet):
+            self.log(f"已发送 {len(params)} 个参数")
+            return True
+        return False
+
+    def query_param(self, param_id):
+        """查询单个参数的当前值"""
+        return self.query_params([param_id])
+
+    def query_params(self, param_ids=None):
+        """查询多个参数的当前值
+        param_ids: [param_id, ...]  要查询的参数ID列表
+                   如果为None或空列表，则查询所有参数
+        """
+        if not self.client_socket:
+            self.log("✗ 错误: 无客户端连接")
+            return False
+
+        if param_ids is None:
+            param_ids = []
+
+        packet = build_query_param_packet(param_ids, seq=self.seq)
+        self.seq += 1
+
+        if self.send_packet(packet):
+            if param_ids:
+                param_names = [PARAM_NAMES.get(pid, ("?", 0, 0, 0))[0] for pid in param_ids]
+                self.log(f"→ 已发送参数查询: {', '.join(param_names)}")
+            else:
+                self.log("→ 已发送参数查询: 所有参数")
+            return True
+        return False
+
+    def query_all_params(self):
+        """查询所有参数"""
+        return self.query_params([])
+
+    def get_cached_param(self, param_id):
+        """获取缓存的参数值（从上次查询结果）"""
+        return self.current_params.get(param_id)
+
+    def set_param_response_callback(self, callback):
+        """设置参数响应回调函数
+        callback: function(params) where params = [(param_id, value), ...]
+        """
+        self.param_response_callback = callback
 
     def start_replay(self):
         """开始回放"""
@@ -625,12 +973,13 @@ class ReplayGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("CSV回放服务器")
-        self.root.geometry("600x500")
+        self.root.geometry("600x550")
         self.root.resizable(True, True)
 
         self.server = ReplayServer(log_callback=self.log)
         self.server.set_progress_callback(self.update_progress)
         self.server.set_status_callback(self.update_status)
+        self.server.set_param_response_callback(self.on_param_response)
 
         self.setup_ui()
         self.load_config()
@@ -697,6 +1046,57 @@ class ReplayGUI:
 
         self.progress_label = ttk.Label(progress_frame, text="0 / 0")
         self.progress_label.pack(side=tk.RIGHT)
+
+        # ===== 参数设置区域 =====
+        param_frame = ttk.LabelFrame(main_frame, text="参数设置", padding="5")
+        param_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # 参数选择和输入
+        param_input_frame = ttk.Frame(param_frame)
+        param_input_frame.pack(fill=tk.X)
+
+        ttk.Label(param_input_frame, text="参数:").pack(side=tk.LEFT)
+
+        # 参数下拉列表
+        self.param_names_list = [(pid, info[0]) for pid, info in PARAM_NAMES.items()]
+        self.param_combo_var = tk.StringVar()
+        param_values = [name for _, name in self.param_names_list]
+        self.param_combo = ttk.Combobox(param_input_frame, textvariable=self.param_combo_var,
+                                        values=param_values, state='readonly', width=15)
+        self.param_combo.pack(side=tk.LEFT, padx=5)
+        self.param_combo.current(0)
+        self.param_combo.bind('<<ComboboxSelected>>', self.on_param_selected)
+
+        ttk.Label(param_input_frame, text="值:").pack(side=tk.LEFT, padx=(10, 0))
+        self.param_value_var = tk.StringVar(value="0.0")
+        self.param_entry = ttk.Entry(param_input_frame, textvariable=self.param_value_var, width=10)
+        self.param_entry.pack(side=tk.LEFT, padx=5)
+
+        self.send_param_btn = ttk.Button(param_input_frame, text="发送参数", command=self.send_single_param, state=tk.DISABLED)
+        self.send_param_btn.pack(side=tk.LEFT, padx=5)
+
+        self.query_param_btn = ttk.Button(param_input_frame, text="查询当前值", command=self.query_current_param, state=tk.DISABLED)
+        self.query_param_btn.pack(side=tk.LEFT, padx=5)
+
+        # 参数信息显示
+        param_info_frame = ttk.Frame(param_frame)
+        param_info_frame.pack(fill=tk.X, pady=(5, 0))
+
+        self.param_info_var = tk.StringVar(value="默认值: 3.0, 范围: 0.0 ~ 20.0")
+        ttk.Label(param_info_frame, textvariable=self.param_info_var, foreground="gray").pack(side=tk.LEFT)
+
+        # 常用参数快捷按钮
+        quick_frame = ttk.Frame(param_frame)
+        quick_frame.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(quick_frame, text="快捷:").pack(side=tk.LEFT)
+        ttk.Button(quick_frame, text="M1力矩+", command=lambda: self.quick_adjust(PARAM_M1_PHASE1_TORQUE, 0.1), width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(quick_frame, text="M1力矩-", command=lambda: self.quick_adjust(PARAM_M1_PHASE1_TORQUE, -0.1), width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(quick_frame, text="M2力矩+", command=lambda: self.quick_adjust(PARAM_M2_PHASE1_TORQUE, -0.1), width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(quick_frame, text="M2力矩-", command=lambda: self.quick_adjust(PARAM_M2_PHASE1_TORQUE, 0.1), width=8).pack(side=tk.LEFT, padx=2)
+
+        # 初始化显示第一个参数的信息
+        self.on_param_selected(None)
 
         # ===== 日志区域 =====
         log_frame = ttk.LabelFrame(main_frame, text="日志", padding="5")
@@ -786,6 +1186,100 @@ class ReplayGUI:
 
         # 停止按钮：回放中
         self.stop_btn.config(state=tk.NORMAL if replay_running else tk.DISABLED)
+
+        # 发送参数按钮和查询按钮：需要客户端连接
+        self.send_param_btn.config(state=tk.NORMAL if has_client else tk.DISABLED)
+        self.query_param_btn.config(state=tk.NORMAL if has_client else tk.DISABLED)
+
+    def on_param_selected(self, event):
+        """参数选择变更时更新信息显示"""
+        idx = self.param_combo.current()
+        if idx >= 0 and idx < len(self.param_names_list):
+            param_id, _ = self.param_names_list[idx]
+            info = PARAM_NAMES.get(param_id, ("", 0, 0, 0))
+            default_val, min_val, max_val = info[1], info[2], info[3]
+
+            # 检查是否有缓存的当前值
+            cached_val = self.server.current_params.get(param_id)
+            if cached_val is not None:
+                self.param_info_var.set(f"当前值: {cached_val:.4f}, 范围: {min_val} ~ {max_val}")
+                self.param_value_var.set(f"{cached_val:.4f}")
+            else:
+                self.param_info_var.set(f"默认值: {default_val}, 范围: {min_val} ~ {max_val}")
+                self.param_value_var.set(str(default_val))
+
+    def query_current_param(self):
+        """查询当前选中参数的值"""
+        idx = self.param_combo.current()
+        if idx < 0 or idx >= len(self.param_names_list):
+            return
+
+        param_id, _ = self.param_names_list[idx]
+        self.server.query_param(param_id)
+
+    def on_param_response(self, params):
+        """处理ESP32返回的参数响应"""
+        # 在主线程中更新GUI
+        self.root.after(0, lambda: self._update_param_display(params))
+
+    def _update_param_display(self, params):
+        """更新参数显示（在主线程中调用）"""
+        # 更新当前选中参数的显示
+        idx = self.param_combo.current()
+        if idx >= 0 and idx < len(self.param_names_list):
+            param_id, _ = self.param_names_list[idx]
+            # 检查响应中是否包含当前选中的参数
+            for pid, value in params:
+                if pid == param_id:
+                    info = PARAM_NAMES.get(param_id, ("", 0, 0, 0))
+                    min_val, max_val = info[2], info[3]
+                    self.param_info_var.set(f"当前值: {value:.4f}, 范围: {min_val} ~ {max_val}")
+                    self.param_value_var.set(f"{value:.4f}")
+                    break
+
+    def send_single_param(self):
+        """发送单个参数"""
+        idx = self.param_combo.current()
+        if idx < 0 or idx >= len(self.param_names_list):
+            return
+
+        param_id, param_name = self.param_names_list[idx]
+
+        try:
+            value = float(self.param_value_var.get())
+        except ValueError:
+            messagebox.showerror("错误", "参数值必须是数字")
+            return
+
+        # 检查范围
+        info = PARAM_NAMES.get(param_id, ("", 0, 0, 0))
+        min_val, max_val = info[2], info[3]
+        if value < min_val or value > max_val:
+            if not messagebox.askyesno("警告", f"参数值 {value} 超出推荐范围 [{min_val}, {max_val}]，是否继续发送？"):
+                return
+
+        self.server.send_param(param_id, value)
+
+    def quick_adjust(self, param_id, delta):
+        """快捷调整参数"""
+        if not self.server.client_socket:
+            self.log("错误: 无客户端连接")
+            return
+
+        # 获取参数信息
+        info = PARAM_NAMES.get(param_id, ("", 0, 0, 0))
+        _, default_val, min_val, max_val = info
+
+        # 使用服务器缓存的当前值，如果没有则使用默认值
+        current_val = self.server.current_params.get(param_id, default_val)
+        new_val = current_val + delta
+
+        # 限制范围
+        new_val = max(min_val, min(max_val, new_val))
+
+        if self.server.send_param(param_id, new_val):
+            # 更新缓存
+            self.server.current_params[param_id] = new_val
 
     def update_progress(self, progress, current, total):
         """更新进度条"""
