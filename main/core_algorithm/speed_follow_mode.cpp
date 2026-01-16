@@ -170,7 +170,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase1.vel = 10.0f;      // 方向参考：正
     _config_motor1.phase1.torque = 0.7f;
     _config_motor1.phase1.kp = 0.0f;
-    _config_motor1.phase1.kd = 0.05f;
+    _config_motor1.phase1.kd = 0.08f;
 
     // 电机1第二阶段参数（压腿）
     // vel: 负方向参考，实际速度由实时反馈动态计算
@@ -179,7 +179,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase2.vel = -10.0f;     // 方向参考：负
     _config_motor1.phase2.torque = -0.7f;
     _config_motor1.phase2.kp = 0.0f;
-    _config_motor1.phase2.kd = 0.05f;
+    _config_motor1.phase2.kd = 0.08f;
 
     // 电机1空闲状态参数
     _config_motor1.idle.mode = 1;
@@ -195,7 +195,7 @@ void SpeedFollowMode::init() {
     _config_motor1.passive.vel = -0.0f;
     _config_motor1.passive.torque = -0.0f;
     _config_motor1.passive.kp = 0.0f;
-    _config_motor1.passive.kd = 0.01f;
+    _config_motor1.passive.kd = 0.05f;
 
     // 配置电机2速度跟随模式参数
     _config_motor2.trigger_speed = -3.0f;  // 触发速度阈值
@@ -209,7 +209,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase1.vel = -10.0f;     // 方向参考：负
     _config_motor2.phase1.torque = -0.7f;
     _config_motor2.phase1.kp = 0.0f;
-    _config_motor2.phase1.kd = 0.05f;
+    _config_motor2.phase1.kd = 0.08f;
 
     // 电机2第二阶段参数（压腿）
     // vel: 正方向参考，实际速度由实时反馈动态计算
@@ -218,7 +218,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase2.vel = 10.0f;      // 方向参考：正
     _config_motor2.phase2.torque = 0.7f;
     _config_motor2.phase2.kp = 0.0f;
-    _config_motor2.phase2.kd = 0.05f;
+    _config_motor2.phase2.kd = 0.08f;
 
     // 电机2空闲状态参数
     _config_motor2.idle.mode = 1;
@@ -234,7 +234,7 @@ void SpeedFollowMode::init() {
     _config_motor2.passive.vel = 0.0f;
     _config_motor2.passive.torque = 0.0f;
     _config_motor2.passive.kp = 0.0f;
-    _config_motor2.passive.kd = 0.01f;
+    _config_motor2.passive.kd = 0.05f;
 
     _state = SPEED_FOLLOW_IDLE;
     _active_motor = 0;
@@ -534,13 +534,11 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
 
             // 根据触发通道设置标签和电机参数：ch6触发检测M2，ch7触发检测M1
             if (_triggered_channel == 6) {
-                _current_m1_phase = 0;  // M1空闲状态
+                _current_m1_phase = 4;  // M1被动状态
                 _current_m2_phase = 3;  // M2检测速度触发中
-                // 电机1使用空闲状态参数（已在开头设置）
             } else {
                 _current_m1_phase = 3;  // M1检测速度触发中
-                _current_m2_phase = 0;  // M2空闲状态
-                // 电机2使用空闲状态参数（已在开头设置）
+                _current_m2_phase = 4;  // M2被动状态
             }
 
             {
@@ -650,14 +648,15 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _lifting_motor = 1; // 1号电机抬腿
                     _phase_start_time = current_time;
                     _current_m1_phase = 1;  // 进入抬腿阶段
-                    _current_m2_phase = 4;  // M2被动状态
+                    _current_m2_phase = 2;  // M2压腿状态
 
                     // 1号电机开始抬腿动作，使用捕获速度的0.8倍
                     float scaled_vel = _captured_velocity * _velocity_scale;
                     setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
                                   _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
-                    setMotorParams(2, _config_motor2.passive.mode, _config_motor2.passive.pos, _config_motor2.passive.vel,
-                                  _config_motor2.passive.torque, _config_motor2.passive.kp, _config_motor2.passive.kd);
+                    // M2压腿，使用捕获速度
+                    setMotorParams(2, _config_motor2.phase2.mode, _config_motor2.phase2.pos, scaled_vel,
+                                  _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
                 } else {
                     _current_m1_phase = 3;  // 检测速度触发中
                     _current_m2_phase = 4;  // M2被动状态
@@ -724,15 +723,16 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     _state = SPEED_FOLLOW_PHASE1;
                     _lifting_motor = 2; // 2号电机抬腿
                     _phase_start_time = current_time;
-                    _current_m1_phase = 4;  // M1被动状态
+                    _current_m1_phase = 2;  // M1压腿状态
                     _current_m2_phase = 1;  // 进入抬腿阶段
 
                     // 2号电机开始抬腿动作，使用捕获速度的0.8倍
                     float scaled_vel = _captured_velocity * _velocity_scale;
                     setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
                                   _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
-                    setMotorParams(1, _config_motor1.passive.mode, _config_motor1.passive.pos, _config_motor1.passive.vel,
-                                  _config_motor1.passive.torque, _config_motor1.passive.kp, _config_motor1.passive.kd);
+                    // M1压腿，使用捕获速度（注意M1压腿速度方向为负）
+                    setMotorParams(1, _config_motor1.phase2.mode, _config_motor1.phase2.pos, scaled_vel,
+                                  _config_motor1.phase2.torque, _config_motor1.phase2.kp, _config_motor1.phase2.kd);
                 } else {
                     _current_m1_phase = 4;  // M1被动状态
                     setMotorParams(1, _config_motor1.passive.mode, _config_motor1.passive.pos, _config_motor1.passive.vel,
@@ -836,17 +836,17 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         setMotorParams(1, _config_motor1.phase1.mode, _config_motor1.phase1.pos, scaled_vel,
                                       _config_motor1.phase1.torque, _config_motor1.phase1.kp, _config_motor1.phase1.kd);
 
-                        // 速度>=3.0时电机2压腿，<3.0时空闲
-                        if (abs_vel >= 3.0f) {
+                        // 速度>=7.0时电机2压腿，<7.0时被动
+                        if (abs_vel >= 7.0f) {
                             setMotorParams(2, _config_motor2.phase2.mode, _config_motor2.phase2.pos, scaled_vel,
                                           _config_motor2.phase2.torque, _config_motor2.phase2.kp, _config_motor2.phase2.kd);
                             _current_m1_phase = 1;  // M1抬腿中
                             _current_m2_phase = 2;  // M2压腿中
                         } else {
-                            setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
-                                          _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
+                            setMotorParams(2, _config_motor2.passive.mode, _config_motor2.passive.pos, _config_motor2.passive.vel,
+                                          _config_motor2.passive.torque, _config_motor2.passive.kp, _config_motor2.passive.kd);
                             _current_m1_phase = 1;  // M1抬腿中
-                            _current_m2_phase = 0;  // M2空闲状态
+                            _current_m2_phase = 4;  // M2被动状态
                         }
                     } else if (_lifting_motor == 2 && motor_data.id == 2) {
                         // 电机2抬腿，速度应为负（-）
@@ -856,16 +856,16 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                         setMotorParams(2, _config_motor2.phase1.mode, _config_motor2.phase1.pos, scaled_vel,
                                       _config_motor2.phase1.torque, _config_motor2.phase1.kp, _config_motor2.phase1.kd);
 
-                        // 速度>=3.0时电机1压腿，<3.0时空闲
-                        if (abs_vel >= 3.0f) {
+                        // 速度>=7.0时电机1压腿，<7.0时被动
+                        if (abs_vel >= 7.0f) {
                             setMotorParams(1, _config_motor1.phase2.mode, _config_motor1.phase2.pos, scaled_vel,
                                           _config_motor1.phase2.torque, _config_motor1.phase2.kp, _config_motor1.phase2.kd);
                             _current_m1_phase = 2;  // M1压腿中
                             _current_m2_phase = 1;  // M2抬腿中
                         } else {
-                            setMotorParams(1, _config_motor1.idle.mode, _config_motor1.idle.pos, _config_motor1.idle.vel,
-                                          _config_motor1.idle.torque, _config_motor1.idle.kp, _config_motor1.idle.kd);
-                            _current_m1_phase = 0;  // M1空闲状态
+                            setMotorParams(1, _config_motor1.passive.mode, _config_motor1.passive.pos, _config_motor1.passive.vel,
+                                          _config_motor1.passive.torque, _config_motor1.passive.kp, _config_motor1.passive.kd);
+                            _current_m1_phase = 4;  // M1被动状态
                             _current_m2_phase = 1;  // M2抬腿中
                         }
                     }
@@ -934,13 +934,13 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                     uint8_t pressing_motor = _lifting_motor;
                     _lifting_motor = 0;  // 清除抬腿电机标记
 
-                    // 设置阶段标签：压腿的腿=0（空闲），另一条腿=3（检测）
+                    // 设置阶段标签：压腿的腿=4（被动），另一条腿=3（检测）
                     if (pressing_motor == 1) {
-                        _current_m1_phase = 0;  // M1空闲状态
+                        _current_m1_phase = 4;  // M1被动状态
                         _current_m2_phase = 3;  // M2检测状态
                     } else {
                         _current_m1_phase = 3;  // M1检测状态
-                        _current_m2_phase = 0;  // M2空闲状态
+                        _current_m2_phase = 4;  // M2被动状态
                     }
                 } else {
                     // 继续压腿动作 - 持续根据当前电机的实时速度绝对值*0.8更新参数
@@ -1032,12 +1032,12 @@ void SpeedFollowMode::update(const MotorDataA1& motor_data, float ch6_max, float
                 setMotorParams(2, _config_motor2.idle.mode, _config_motor2.idle.pos, _config_motor2.idle.vel,
                               _config_motor2.idle.torque, _config_motor2.idle.kp, _config_motor2.idle.kd);
 
-                // 即将检测的电机设为3，另一条腿设为0
+                // 即将检测的电机设为3，另一条腿设为4（被动）
                 if (_active_motor == 1) {
                     _current_m1_phase = 3;  // M1即将检测
-                    _current_m2_phase = 0;  // M2空闲等待
+                    _current_m2_phase = 4;  // M2被动状态
                 } else {
-                    _current_m1_phase = 0;  // M1空闲等待
+                    _current_m1_phase = 4;  // M1被动状态
                     _current_m2_phase = 3;  // M2即将检测
                 }
             }
