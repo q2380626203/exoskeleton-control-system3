@@ -32,6 +32,10 @@ static ButtonDetector assist_up_button;
 static ButtonDetector assist_down_button;
 static SwitchDetector power_switch;
 
+// 双击检测变量
+static uint32_t assist_up_last_press_time = 0;
+static uint32_t assist_down_last_press_time = 0;
+
 // 回调函数指针
 static button_press_callback_t on_assist_up_pressed = NULL;
 static button_press_callback_t on_assist_down_pressed = NULL;
@@ -260,13 +264,24 @@ static const char* float_to_chinese_number(float value) {
 /**
  * @brief 助力增加按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
- * @note 增加电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 1.7，每次增加 TORQUE_STEP
- *       - 电机2: 范围 -1.7 ~ 0，每次增加力矩绝对值（更大的负值）
- *       - 力矩 > 1.0 时：触发速度设置为 ±7.0
- *       - 力矩 <= 1.0 时：触发速度恢复为 ±3.0（默认值）
+ * @note 单击：增加电机1和电机2的Phase1力矩绝对值
+ *       双击：切换到AI模式并启动
  */
 static void default_assist_up_callback(gpio_num_t pin) {
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // 检测双击
+    if ((current_time - assist_up_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
+        // 双击：切换到AI模式并启动
+        speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
+        speed_follow.startAIRunning();
+        voice_speak(&voice_module, "自动模式");
+        assist_up_last_press_time = 0;  // 重置，避免连续触发
+        return;
+    }
+    assist_up_last_press_time = current_time;
+
+    // 单击：增加助力
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
@@ -297,13 +312,24 @@ static void default_assist_up_callback(gpio_num_t pin) {
 /**
  * @brief 助力减少按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
- * @note 减少电机1和电机2的Phase1力矩**绝对值**
- *       - 电机1: 范围 0 ~ 1.7，每次减少 TORQUE_STEP
- *       - 电机2: 范围 -1.7 ~ 0，每次减少力矩绝对值（更小的负值）
- *       - 力矩 > 1.0 时：触发速度设置为 ±7.0
- *       - 力矩 <= 1.0 时：触发速度恢复为 ±3.0（默认值）
+ * @note 单击：减少电机1和电机2的Phase1力矩绝对值
+ *       双击：切换到程序模式并停止AI运行
  */
 static void default_assist_down_callback(gpio_num_t pin) {
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // 检测双击
+    if ((current_time - assist_down_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
+        // 双击：切换到程序模式
+        speed_follow.stopAIRunning();
+        speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
+        voice_speak(&voice_module, "手动模式");
+        assist_down_last_press_time = 0;  // 重置，避免连续触发
+        return;
+    }
+    assist_down_last_press_time = current_time;
+
+    // 单击：减少助力
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);

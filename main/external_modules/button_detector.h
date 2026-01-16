@@ -17,6 +17,7 @@ extern "C" {
 
 #define BUTTON_DEBOUNCE_MS        50           // 防抖延迟（毫秒）
 #define BUTTON_SCAN_INTERVAL_MS   20           // 扫描间隔（毫秒）
+#define DOUBLE_CLICK_INTERVAL_MS  400          // 双击间隔（毫秒）
 
 // ============================================================================
 // 类型定义

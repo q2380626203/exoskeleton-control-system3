@@ -204,6 +204,12 @@ public:
     uint32_t getPhase2Timeout() const { return _phase2_timeout_ms; }
     void setPhase2Timeout(uint32_t timeout_ms) { _phase2_timeout_ms = timeout_ms; }
 
+    // AI固定周期模式参数
+    uint32_t getAICycleDuration() const { return _ai_cycle_duration_ms; }
+    void setAICycleDuration(uint32_t duration_ms) { _ai_cycle_duration_ms = duration_ms; }
+    float getAIPeakVelocity() const { return _ai_peak_velocity; }
+    void setAIPeakVelocity(float velocity) { _ai_peak_velocity = velocity; }
+
 private:
     speed_follow_state_t _state;
     speed_follow_config_t _config_motor1;  // 电机1配置
@@ -271,6 +277,12 @@ private:
 
     // AI模式静止检测
     uint32_t _both_static_start_time;     // 双腿都静止的开始时间（用于4秒超时检测）
+
+    // ===== AI固定周期模式相关 =====
+    uint32_t _ai_cycle_duration_ms;       // AI模式单腿周期时长（默认1000ms）
+    uint32_t _ai_cycle_start_time;        // 当前周期开始时间
+    uint8_t _ai_current_leg;              // 当前抬腿的腿（1或2）
+    float _ai_peak_velocity;              // AI模式峰值速度（默认40.0 rad/s）
 
     // ===== IMU模式相关 =====
     float _imu_roll_threshold;      // IMU roll值变化阈值（默认5.0度）
