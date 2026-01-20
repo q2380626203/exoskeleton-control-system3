@@ -1,18 +1,10 @@
 #include "tcp_data_upload.h"
-#include "tcp_replay_receive.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "esp_netif.h"
-#include "nvs_flash.h"
-#include "lwip/sockets.h"
-#include "lwip/netdb.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "freertos/event_groups.h"
 #include "esp_rom_uart.h"
 #include "driver/uart.h"
 #include <string.h>
@@ -26,53 +18,9 @@
 
 // static const char *TAG = "TCP_UPLOAD";  // 运行时日志已禁用，TAG未使用
 
-/* 网络配置（由 tcp_set_network_config 初始化） */
-static const char *s_wifi_ssid = NULL;
-static const char *s_wifi_password = NULL;
-static const char *s_tcp_server_host = NULL;
-static uint16_t s_tcp_server_port = 0;
-static uint16_t s_tcp_lan_server_port = 0;
-static uint8_t s_device_id = 0;
+/* 设备ID配置（原来从网络配置获取） */
+static uint8_t s_device_id = 1;  // 默认设备ID为1
 
-/**
- * @brief 设置网络配置
- */
-void tcp_set_network_config(const tcp_network_config_t *config)
-{
-    if (config == NULL) return;
-    s_wifi_ssid = config->wifi_ssid;
-    s_wifi_password = config->wifi_password;
-    s_tcp_server_host = config->tcp_server_host;
-    s_tcp_server_port = config->tcp_server_port;
-    s_tcp_lan_server_port = config->tcp_lan_server_port;
-    s_device_id = config->device_id;
-}
-
-/* WiFi事件标志 */
-#define WIFI_CONNECTED_BIT  BIT0
-#define WIFI_FAIL_BIT       BIT1
-
-static EventGroupHandle_t s_wifi_event_group = NULL;
-static int s_retry_num = 0;
-
-/* TCP连接状态 - 公网 */
-static int s_tcp_socket = -1;
-static bool s_tcp_connected = false;
-static bool s_upload_running = false;
-static TaskHandle_t s_upload_task_handle = NULL;
-
-/* TCP接收缓冲区（用于接收回放数据） */
-static uint8_t s_tcp_rx_buffer[2048];
-static int s_tcp_rx_len = 0;
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-/* TCP连接状态 - 局域网 */
-static int s_tcp_lan_socket = -1;
-static bool s_tcp_lan_connected = false;
-static esp_ip4_addr_t s_gateway_ip = {0};  /* 网关IP（手机热点地址） */
-#endif
-
-#if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传状态 */
 static bool s_serial_initialized = false;
 static uint32_t s_serial_packets_sent = 0;
@@ -80,9 +28,10 @@ static uint32_t s_serial_bytes_sent = 0;
 
 /* 串口时间同步状态 */
 static volatile bool s_serial_ntp_synced = false;     /* 是否已通过串口同步时间 */
-// static uint8_t s_serial_rx_buffer[64];                /* 串口接收缓冲区 - 未使用 */
-// static volatile int s_serial_rx_len = 0;              /* 接收缓冲区数据长度 - 未使用 */
-#endif
+
+/* 上传任务状态 */
+static volatile bool s_upload_running = false;
+static TaskHandle_t s_upload_task_handle = NULL;
 
 /* 数据缓冲区 - 多缓冲（每个缓冲区存200ms数据，共5个=1秒缓存） */
 #define BUFFER_SIZE TCP_SAMPLES_PER_PACKET
@@ -94,16 +43,10 @@ static volatile int s_send_buf_idx = 0;    /* 当前发送的缓冲区索引 */
 static volatile int s_pending_count = 0;   /* 待发送的缓冲区数量 */
 static SemaphoreHandle_t s_buffer_mutex = NULL;
 
-/* 统计信息 */
-static uint32_t s_packets_sent = 0;
-static uint32_t s_packets_failed = 0;
-static uint32_t s_bytes_sent = 0;
+/* 统计信息 - 已删除，仅使用串口统计 */
 static uint16_t s_seq_number = 0;
 
-/* 时间同步状态 */
-static volatile bool s_time_synced = false;
-
-/* TCP对时协议定义（与串口透传相同） */
+/* 串口透传对时协议定义 */
 #define TIME_SYNC_REQUEST_BYTE1   0xAA
 #define TIME_SYNC_REQUEST_BYTE2   0xCC
 #define TIME_SYNC_RESPONSE_BYTE1  0xCC
@@ -114,207 +57,11 @@ static volatile bool s_time_synced = false;
 
 /* 前向声明 */
 static void clear_data_buffers(void);
-static esp_err_t tcp_time_sync(void);
-static void tcp_check_receive(void);
 static uint8_t calc_crc8(const uint8_t *data, size_t len);
-#if defined(ENABLE_SERIAL_4G_TCP)
-/* 串口透传前向声明 */
-#endif
-
-/* WiFi事件处理 - 仅设置标志，不阻塞 */
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        s_tcp_connected = false;
-        s_retry_num++;
-        /* 频率控制：每5秒打印一次（已禁用以减少串口输出） */
-        // int64_t now = esp_timer_get_time() / 1000;
-        // if (now - s_last_wifi_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGI(TAG, "WiFi重连中 (第%d次)", s_retry_num);
-        //     s_last_wifi_log_time = now;
-        // }
-        esp_wifi_connect();  // 自动重连
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        // ESP_LOGI(TAG, "获取到IP地址: " IPSTR, IP2STR(&event->ip_info.ip));  // 运行时日志已禁用
-        (void)event;  /* 避免未使用警告 */
-#if defined(ENABLE_WIFI_LAN_TCP)
-        /* 保存网关地址（手机热点的IP） */
-        s_gateway_ip = event->ip_info.gw;
-        // ESP_LOGI(TAG, "网关地址(局域网服务器): " IPSTR, IP2STR(&s_gateway_ip));  // 运行时日志已禁用
-#endif
-        s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-esp_err_t wifi_init_sta(void)
-{
-    esp_err_t ret;
-
-    /* 初始化NVS */
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    s_wifi_event_group = xEventGroupCreate();
-
-    /* 初始化TCP/IP协议栈 */
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    /* WiFi初始化配置 */
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    /* 注册事件处理器 */
-    esp_event_handler_instance_t instance_any_id;
-    esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_got_ip));
-
-    /* WiFi STA配置 */
-    wifi_config_t wifi_config = {
-        .sta = {
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    /* 复制SSID和密码 */
-    if (s_wifi_ssid) {
-        strncpy((char *)wifi_config.sta.ssid, s_wifi_ssid, sizeof(wifi_config.sta.ssid) - 1);
-    }
-    if (s_wifi_password) {
-        strncpy((char *)wifi_config.sta.password, s_wifi_password, sizeof(wifi_config.sta.password) - 1);
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    // ESP_LOGI(TAG, "WiFi STA初始化完成，正在连接到 %s ...", WIFI_STA_SSID);  // 运行时日志已禁用
-
-    /* 等待连接成功或失败 - 使用超时而非无限等待 */
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE,
-                                           pdFALSE,
-                                           pdMS_TO_TICKS(10000));  // 10秒超时
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        // ESP_LOGI(TAG, "WiFi连接成功: SSID=%s", WIFI_STA_SSID);  // 运行时日志已禁用
-        return ESP_OK;
-    } else if (bits & WIFI_FAIL_BIT) {
-        // ESP_LOGE(TAG, "WiFi连接失败: SSID=%s", WIFI_STA_SSID);  // 运行时日志已禁用
-        return ESP_FAIL;
-    }
-
-    // ESP_LOGW(TAG, "WiFi连接超时，将在后台继续尝试");  // 运行时日志已禁用
-    return ESP_ERR_TIMEOUT;
-}
-
-/**
- * @brief 应用服务器时间到系统时钟（公用函数）
- * @param server_time_ms 服务器时间戳（毫秒）
- * @return true 成功, false 时间戳无效
- */
-static bool apply_server_time(int64_t server_time_ms)
-{
-    /* 验证服务器时间戳有效性（2020年~2100年范围内） */
-    const int64_t MIN_VALID_TIME_MS = 1577836800000LL;  /* 2020-01-01 */
-    const int64_t MAX_VALID_TIME_MS = 4102444800000LL;  /* 2100-01-01 */
-    if (server_time_ms < MIN_VALID_TIME_MS || server_time_ms > MAX_VALID_TIME_MS) {
-        return false;
-    }
-
-    /* 设置时区 */
-    setenv("TZ", BEIJING_TIMEZONE, 1);
-    tzset();
-
-    /* 设置系统时钟 */
-    struct timeval tv;
-    tv.tv_sec = server_time_ms / 1000;
-    tv.tv_usec = (server_time_ms % 1000) * 1000;
-    settimeofday(&tv, NULL);
-
-    /* 设置时间同步标志 */
-    s_time_synced = true;
-    return true;
-}
-
-/**
- * @brief TCP三次握手对时（通过公网TCP连接）
- * @return ESP_OK 成功, ESP_FAIL 失败
- * @note 对时流程:
- *   1. 设备发送 AA CC (对时请求)
- *   2. 服务端回复 CC AA + 8字节时间戳 (对时响应)
- *   3. 设备发送 BB BB (对时确认)
- */
-static esp_err_t tcp_time_sync(void)
-{
-    if (!s_tcp_connected || s_tcp_socket < 0) {
-        return ESP_FAIL;
-    }
-
-    /* 第一步: 发送对时请求 AA CC */
-    uint8_t request_packet[2] = {TIME_SYNC_REQUEST_BYTE1, TIME_SYNC_REQUEST_BYTE2};
-    int sent = send(s_tcp_socket, request_packet, 2, 0);
-    if (sent != 2) {
-        return ESP_FAIL;
-    }
-
-    /* 第二步: 等待服务端响应 CC AA + 时间戳，最多等待500ms */
-    uint8_t rx_buf[16];
-    struct timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 500000;  /* 500ms */
-    setsockopt(s_tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-    int read_len = recv(s_tcp_socket, rx_buf, sizeof(rx_buf), 0);
-    if (read_len >= TIME_SYNC_RESPONSE_SIZE) {
-        /* 查找 CC AA + 时间戳 响应 */
-        for (int i = 0; i <= read_len - TIME_SYNC_RESPONSE_SIZE; i++) {
-            if (rx_buf[i] == TIME_SYNC_RESPONSE_BYTE1 && rx_buf[i+1] == TIME_SYNC_RESPONSE_BYTE2) {
-                /* 解析8字节时间戳（小端序） */
-                int64_t server_time_ms = (int64_t)rx_buf[i+2] |
-                                          ((int64_t)rx_buf[i+3] << 8) |
-                                          ((int64_t)rx_buf[i+4] << 16) |
-                                          ((int64_t)rx_buf[i+5] << 24) |
-                                          ((int64_t)rx_buf[i+6] << 32) |
-                                          ((int64_t)rx_buf[i+7] << 40) |
-                                          ((int64_t)rx_buf[i+8] << 48) |
-                                          ((int64_t)rx_buf[i+9] << 56);
-
-                /* 第三步: 收到对时响应，应用时间并回复 BB BB 确认 */
-                if (apply_server_time(server_time_ms)) {
-                    uint8_t confirm_packet[2] = {TIME_SYNC_CONFIRM_BYTE1, TIME_SYNC_CONFIRM_BYTE2};
-                    send(s_tcp_socket, confirm_packet, 2, 0);
-                    return ESP_OK;
-                }
-            }
-        }
-    }
-
-    return ESP_FAIL;
-}
 
 uint64_t get_beijing_timestamp_ms(void)
 {
-    if (!s_time_synced) {
+    if (!s_serial_ntp_synced) {
         return 0;  /* 时间未同步，返回0 */
     }
 
@@ -327,7 +74,7 @@ uint64_t get_beijing_timestamp_ms(void)
 
 double get_timestamp_double(void)
 {
-    if (!s_time_synced) {
+    if (!s_serial_ntp_synced) {
         return 0.0;  /* 时间未同步，返回0让服务端过滤 */
     }
 
@@ -340,27 +87,19 @@ double get_timestamp_double(void)
 
 bool is_time_synced(void)
 {
-    return s_time_synced;
+    return s_serial_ntp_synced;
 }
 
-/* WiFi后台初始化任务 - 不阻塞主程序 */
-static void wifi_background_init_task(void *pvParameters)
+/* 后台初始化任务 */
+static void serial_4g_background_init_task(void *pvParameters)
 {
-    // ESP_LOGI(TAG, "WiFi后台初始化任务启动");  // 运行时日志已禁用
-
-    /* 初始化WiFi（NTP会在获取到IP后由事件处理器自动启动） */
-    esp_err_t wifi_ret = wifi_init_sta();
+    // ESP_LOGI(TAG, "4G模块后台初始化任务启动");  // 运行时日志已禁用
 
     /* 初始化TCP上传模块 */
     if (tcp_data_upload_init() == ESP_OK) {
         /* 启动TCP上传任务 */
         tcp_data_upload_start();
-
-        if (wifi_ret == ESP_OK) {
-            // ESP_LOGI(TAG, "WiFi和TCP数据上传初始化完成");  // 运行时日志已禁用
-        } else {
-            // ESP_LOGW(TAG, "WiFi连接未成功，TCP上传任务已启动，将自动重连");  // 运行时日志已禁用
-        }
+        // ESP_LOGI(TAG, "4G模块TCP数据上传初始化完成");  // 运行时日志已禁用
     } else {
         // ESP_LOGE(TAG, "TCP上传模块初始化失败");  // 运行时日志已禁用
     }
@@ -368,238 +107,12 @@ static void wifi_background_init_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-void wifi_tcp_init_background(void)
+void serial_4g_tcp_init_background(void)
 {
     /* 创建低优先级的后台初始化任务 */
-    xTaskCreate(wifi_background_init_task, "wifi_bg_init", 4096, NULL, 2, NULL);
-    // ESP_LOGI(TAG, "WiFi/TCP后台初始化任务已创建");  // 运行时日志已禁用
+    xTaskCreate(serial_4g_background_init_task, "4g_bg_init", 4096, NULL, 2, NULL);
+    // ESP_LOGI(TAG, "4G模块TCP后台初始化任务已创建");  // 运行时日志已禁用
 }
-
-/* TCP连接到服务器 */
-static esp_err_t tcp_connect_to_server(void)
-{
-    struct hostent *hp;
-    struct sockaddr_in server_addr;
-    // int64_t now = esp_timer_get_time() / 1000;  // 日志已禁用，变量未使用
-
-    /* 关闭旧连接 */
-    if (s_tcp_socket >= 0) {
-        close(s_tcp_socket);
-        s_tcp_socket = -1;
-    }
-
-    /* DNS解析 */
-    hp = gethostbyname(s_tcp_server_host);
-    if (hp == NULL) {
-        // 运行时日志已禁用以减少串口输出
-        // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "TCP: DNS解析失败");
-        //     s_last_tcp_log_time = now;
-        // }
-        return ESP_FAIL;
-    }
-
-    /* 创建Socket */
-    s_tcp_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_tcp_socket < 0) {
-        // 运行时日志已禁用以减少串口输出
-        // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "TCP: Socket创建失败");
-        //     s_last_tcp_log_time = now;
-        // }
-        return ESP_FAIL;
-    }
-
-    /* 设置服务器地址 */
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(s_tcp_server_port);
-    memcpy(&server_addr.sin_addr, hp->h_addr, hp->h_length);
-
-    /* 连接服务器 */
-    if (connect(s_tcp_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        // 运行时日志已禁用以减少串口输出
-        // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "TCP: 连接服务器失败");
-        //     s_last_tcp_log_time = now;
-        // }
-        close(s_tcp_socket);
-        s_tcp_socket = -1;
-        return ESP_FAIL;
-    }
-
-    /* 设置发送超时 */
-    struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    setsockopt(s_tcp_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    /* 禁用Nagle算法，减少延迟 */
-    int flag = 1;
-    setsockopt(s_tcp_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-    s_tcp_connected = true;
-    // ESP_LOGI(TAG, "TCP公网服务器连接成功");  // 运行时日志已禁用
-
-    /* 设置接收超时为非阻塞检查 */
-    struct timeval rx_timeout;
-    rx_timeout.tv_sec = 0;
-    rx_timeout.tv_usec = 1000;  /* 1ms */
-    setsockopt(s_tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &rx_timeout, sizeof(rx_timeout));
-
-    return ESP_OK;
-}
-
-/**
- * @brief 检查TCP接收数据（非阻塞）
- * @note 处理服务器发来的回放数据
- */
-static void tcp_check_receive(void)
-{
-    if (!s_tcp_connected || s_tcp_socket < 0) {
-        return;
-    }
-
-    /* 非阻塞接收 */
-    int recv_len = recv(s_tcp_socket, s_tcp_rx_buffer + s_tcp_rx_len,
-                        sizeof(s_tcp_rx_buffer) - s_tcp_rx_len, MSG_DONTWAIT);
-
-    if (recv_len > 0) {
-        s_tcp_rx_len += recv_len;
-
-        /* 处理接收到的数据 */
-        int offset = 0;
-        while (offset < s_tcp_rx_len) {
-            int processed = tcp_replay_process_data(s_tcp_rx_buffer + offset,
-                                                     s_tcp_rx_len - offset);
-            if (processed > 0) {
-                offset += processed;
-            } else if (processed == 0) {
-                /* 不是回放数据包，跳过一个字节继续查找 */
-                offset++;
-            } else {
-                /* 数据不完整，等待更多数据 */
-                break;
-            }
-        }
-
-        /* 移动剩余数据到缓冲区头部 */
-        if (offset > 0 && offset < s_tcp_rx_len) {
-            memmove(s_tcp_rx_buffer, s_tcp_rx_buffer + offset, s_tcp_rx_len - offset);
-            s_tcp_rx_len -= offset;
-        } else if (offset >= s_tcp_rx_len) {
-            s_tcp_rx_len = 0;
-        }
-
-        /* 检查是否有待发送的参数响应 */
-        if (tcp_replay_has_pending_response()) {
-            uint8_t response_buf[128];
-            int response_len = tcp_replay_get_pending_response(response_buf, sizeof(response_buf));
-            if (response_len > 0) {
-                /* 填充device_id后需要重新计算CRC */
-                response_buf[2] = s_device_id;
-                /* 重新计算CRC8（CRC是最后一个字节） */
-                response_buf[response_len - 1] = calc_crc8(response_buf, response_len - 1);
-                send(s_tcp_socket, response_buf, response_len, 0);
-            }
-        }
-    } else if (recv_len == 0) {
-        /* 连接关闭 */
-        s_tcp_connected = false;
-    }
-    /* recv_len < 0 且 errno == EAGAIN/EWOULDBLOCK 表示无数据，正常 */
-}
-
-/**
- * @brief 检查并发送回放数据请求（当缓冲区数据不足时）
- */
-static void tcp_check_send_replay_request(void)
-{
-    if (!s_tcp_connected || s_tcp_socket < 0) {
-        return;
-    }
-
-    /* 检查是否需要请求更多数据 */
-    if (!tcp_replay_need_more_data()) {
-        return;
-    }
-
-    /* 构建请求包 */
-    uint8_t request_buf[16];
-    int request_len = tcp_replay_build_request_packet(request_buf, sizeof(request_buf));
-    if (request_len <= 0) {
-        return;
-    }
-
-    /* 填充device_id */
-    request_buf[2] = s_device_id;
-
-    /* 发送请求 */
-    send(s_tcp_socket, request_buf, request_len, 0);
-}
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-/* TCP连接到局域网服务器（网关/手机热点） */
-static esp_err_t tcp_connect_to_lan_server(void)
-{
-    struct sockaddr_in server_addr;
-    // int64_t now = esp_timer_get_time() / 1000;  // 日志已禁用，变量未使用
-
-    /* 检查网关地址是否有效 */
-    if (s_gateway_ip.addr == 0) {
-        return ESP_FAIL;
-    }
-
-    /* 关闭旧连接 */
-    if (s_tcp_lan_socket >= 0) {
-        close(s_tcp_lan_socket);
-        s_tcp_lan_socket = -1;
-    }
-
-    /* 创建Socket */
-    s_tcp_lan_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_tcp_lan_socket < 0) {
-        // 运行时日志已禁用以减少串口输出
-        // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "LAN: Socket创建失败");
-        //     s_last_tcp_log_time = now;
-        // }
-        return ESP_FAIL;
-    }
-
-    /* 设置服务器地址（网关IP） */
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(s_tcp_lan_server_port);
-    server_addr.sin_addr.s_addr = s_gateway_ip.addr;
-
-    /* 连接服务器 */
-    if (connect(s_tcp_lan_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        // 运行时日志已禁用以减少串口输出
-        // if (now - s_last_tcp_log_time >= LOG_INTERVAL_MS) {
-        //     ESP_LOGW(TAG, "LAN: 连接 " IPSTR ":%d 失败", IP2STR(&s_gateway_ip), s_tcp_lan_server_port);
-        //     s_last_tcp_log_time = now;
-        // }
-        close(s_tcp_lan_socket);
-        s_tcp_lan_socket = -1;
-        return ESP_FAIL;
-    }
-
-    /* 设置发送超时 */
-    struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    setsockopt(s_tcp_lan_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    /* 禁用Nagle算法 */
-    int flag = 1;
-    setsockopt(s_tcp_lan_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-    s_tcp_lan_connected = true;
-    // ESP_LOGI(TAG, "LAN服务器连接成功: " IPSTR ":%d", IP2STR(&s_gateway_ip), s_tcp_lan_server_port);  // 运行时日志已禁用
-    return ESP_OK;
-}
-#endif
 
 /* CRC8查表法（多项式0x07，初始值0x00） */
 static const uint8_t crc8_table[256] = {
@@ -684,11 +197,8 @@ static void fill_send_packet(void)
 
     /* 设置flags: bit0=sync, bit1=has_roll */
     uint8_t flags = 0;
-    /* 只要任一同步方式成功即可（WiFi TCP或串口透传） */
-    if (s_time_synced) flags |= FLAG_SYNC;
-#if defined(ENABLE_SERIAL_4G_TCP)
+    /* 只要串口透传对时成功即可 */
     if (s_serial_ntp_synced) flags |= FLAG_SYNC;
-#endif
     if (has_roll) flags |= FLAG_HAS_ROLL;
 
     /* 获取基准时间戳（第一条数据的时间，48bit毫秒） */
@@ -783,44 +293,9 @@ static void fill_send_packet(void)
     s_actual_packet_size = offset;
 }
 
-/* 发送到公网服务器 */
-static esp_err_t tcp_send_packet_wan(void)
-{
-    if (!s_tcp_connected || s_tcp_socket < 0) {
-        return ESP_FAIL;
-    }
+/* 发送到公网服务器 - 已删除，仅保留串口透传 */
 
-    int sent = send(s_tcp_socket, s_send_buffer, s_actual_packet_size, 0);
-    if (sent < 0) {
-        // ESP_LOGE(TAG, "公网发送失败: %d", errno);  // 运行时日志已禁用
-        s_tcp_connected = false;
-        s_packets_failed++;
-        return ESP_FAIL;
-    }
-
-    s_packets_sent++;
-    s_bytes_sent += sent;
-    return ESP_OK;
-}
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-/* 发送到局域网服务器 */
-static esp_err_t tcp_send_packet_lan(void)
-{
-    if (!s_tcp_lan_connected || s_tcp_lan_socket < 0) {
-        return ESP_FAIL;
-    }
-
-    int sent = send(s_tcp_lan_socket, s_send_buffer, s_actual_packet_size, 0);
-    if (sent < 0) {
-        // ESP_LOGE(TAG, "局域网发送失败: %d", errno);  // 运行时日志已禁用
-        s_tcp_lan_connected = false;
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
-}
-#endif
+/* 发送到局域网服务器 - 已删除，仅保留串口透传 */
 
 /**
  * @brief 清空数据发送缓冲区（丢弃旧数据）
@@ -840,7 +315,6 @@ static void clear_data_buffers(void)
     }
 }
 
-#if defined(ENABLE_SERIAL_4G_TCP)
 /* 串口透传专用任务句柄 */
 static TaskHandle_t s_serial_task_handle = NULL;
 static volatile bool s_serial_packet_ready = false;
@@ -849,6 +323,33 @@ static size_t s_serial_packet_size = 0;  /* 串口发送的包大小 */
 
 /* 对时状态 */
 static volatile bool s_serial_time_synced = false;  /* 是否已通过串口对时成功 */
+
+/**
+ * @brief 应用服务器时间到系统时钟
+ * @param server_time_ms 服务器时间戳（毫秒）
+ * @return true 成功, false 时间戳无效
+ */
+static bool apply_server_time(int64_t server_time_ms)
+{
+    /* 验证服务器时间戳有效性（2020年~2100年范围内） */
+    const int64_t MIN_VALID_TIME_MS = 1577836800000LL;  /* 2020-01-01 */
+    const int64_t MAX_VALID_TIME_MS = 4102444800000LL;  /* 2100-01-01 */
+    if (server_time_ms < MIN_VALID_TIME_MS || server_time_ms > MAX_VALID_TIME_MS) {
+        return false;
+    }
+
+    /* 设置时区 */
+    setenv("TZ", BEIJING_TIMEZONE, 1);
+    tzset();
+
+    /* 设置系统时钟 */
+    struct timeval tv;
+    tv.tv_sec = server_time_ms / 1000;
+    tv.tv_usec = (server_time_ms % 1000) * 1000;
+    settimeofday(&tv, NULL);
+
+    return true;
+}
 
 /**
  * @brief 检查串口接收的对时响应并设置系统时间
@@ -1067,76 +568,26 @@ static esp_err_t serial_send_packet(void)
 
     return ESP_OK;
 }
-#endif
 
 /* 上传任务 */
 static void tcp_upload_task(void *pvParameters)
 {
     // ESP_LOGI(TAG, "TCP上传任务启动");  // 运行时日志已禁用
 
-#if defined(ENABLE_SERIAL_4G_TCP)
     /* 初始化串口透传 */
     serial_passthrough_init();
-#endif
 
     while (s_upload_running) {
-        /* 检查公网TCP连接 */
-        if (!s_tcp_connected) {
-            /* 静默重连，日志频率已在tcp_connect_to_server中控制 */
-            if (tcp_connect_to_server() == ESP_OK) {
-                /* 连接成功后进行三次握手对时（如果尚未同步） */
-                if (!s_time_synced) {
-                    tcp_time_sync();
-                    /* 对时成功后清空旧数据 */
-                    if (s_time_synced) {
-                        clear_data_buffers();
-                    }
-                }
-            }
-        }
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-        /* 检查局域网TCP连接 */
-        if (!s_tcp_lan_connected) {
-            tcp_connect_to_lan_server();
-        }
-#endif
-
-        /* 检查TCP接收数据（回放数据） */
-        tcp_check_receive();
-
-        /* 检查是否需要请求更多回放数据 */
-        tcp_check_send_replay_request();
-
         /* 检查是否有数据待发送 */
         if (s_pending_count > 0) {
-            /* 填充数据包（公网、局域网、串口透传共用同一个包） */
+            /* 填充数据包（串口透传专用） */
             fill_send_packet();
 
-            /* 发送到公网 */
-            bool wan_ok = (tcp_send_packet_wan() == ESP_OK);
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-            /* 发送到局域网 */
-            bool lan_ok = (tcp_send_packet_lan() == ESP_OK);
-            (void)lan_ok;  /* 避免未使用警告 */
-#endif
-
-#if defined(ENABLE_SERIAL_4G_TCP)
-            /* 通过串口透传发送（4G模块） - 始终发送，不受WiFi/TCP状态影响 */
+            /* 通过串口透传发送（4G模块） */
             bool serial_ok = (serial_send_packet() == ESP_OK);
-            (void)serial_ok;  /* 避免未使用警告 */
-#endif
 
-            /* 只要有一个通道发送成功就移动缓冲区（避免数据丢失） */
-            bool any_ok = wan_ok;
-#if defined(ENABLE_WIFI_LAN_TCP)
-            any_ok = any_ok || lan_ok;
-#endif
-#if defined(ENABLE_SERIAL_4G_TCP)
-            any_ok = any_ok || serial_ok;
-#endif
-            if (any_ok) {
+            /* 只要串口发送成功就移动缓冲区 */
+            if (serial_ok) {
                 if (xSemaphoreTake(s_buffer_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                     s_send_buf_idx = (s_send_buf_idx + 1) % BUFFER_COUNT;
                     s_pending_count--;
@@ -1145,36 +596,8 @@ static void tcp_upload_task(void *pvParameters)
             }
         }
 
-        /* 如果所有网络连接都断开，延迟重连 */
-        bool need_slow_loop = !s_tcp_connected;
-#if defined(ENABLE_WIFI_LAN_TCP)
-        need_slow_loop = need_slow_loop && !s_tcp_lan_connected;
-#endif
-#if defined(ENABLE_SERIAL_4G_TCP)
-        /* 串口透传始终工作，不需要慢循环 */
-        need_slow_loop = false;
-#endif
-        if (need_slow_loop) {
-            vTaskDelay(pdMS_TO_TICKS(3000));  // 重连间隔3秒
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(1));  // 1ms检查一次
-        }
+        vTaskDelay(pdMS_TO_TICKS(1));  // 1ms检查一次
     }
-
-    /* 关闭连接 */
-    if (s_tcp_socket >= 0) {
-        close(s_tcp_socket);
-        s_tcp_socket = -1;
-    }
-    s_tcp_connected = false;
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-    if (s_tcp_lan_socket >= 0) {
-        close(s_tcp_lan_socket);
-        s_tcp_lan_socket = -1;
-    }
-    s_tcp_lan_connected = false;
-#endif
 
     // ESP_LOGI(TAG, "TCP上传任务结束");  // 运行时日志已禁用
     vTaskDelete(NULL);
@@ -1187,7 +610,6 @@ esp_err_t tcp_data_upload_init(void)
     s_write_index = 0;
     s_send_buf_idx = 0;
     s_pending_count = 0;
-    s_tcp_rx_len = 0;
 
     /* 创建互斥锁 */
     s_buffer_mutex = xSemaphoreCreateMutex();
@@ -1196,11 +618,7 @@ esp_err_t tcp_data_upload_init(void)
         return ESP_FAIL;
     }
 
-    /* 初始化回放模块 */
-    tcp_replay_init();
-
     // ESP_LOGI(TAG, "TCP数据上传模块初始化完成");  // 运行时日志已禁用
-    // ESP_LOGI(TAG, "数据包大小: %d 字节, 缓冲区数量: %d", sizeof(tcp_data_packet_t), BUFFER_COUNT);  // 运行时日志已禁用
     return ESP_OK;
 }
 
@@ -1284,38 +702,12 @@ void tcp_data_upload_stop(void)
 
 bool tcp_data_is_connected(void)
 {
-    return s_tcp_connected;
+    return s_serial_initialized && s_serial_ntp_synced;
 }
-
-#if defined(ENABLE_WIFI_LAN_TCP)
-bool tcp_data_lan_is_connected(void)
-{
-    return s_tcp_lan_connected;
-}
-
-bool tcp_get_gateway_ip(char *ip_str)
-{
-    if (ip_str == NULL || s_gateway_ip.addr == 0) {
-        return false;
-    }
-    sprintf(ip_str, IPSTR, IP2STR(&s_gateway_ip));
-    return true;
-}
-#else
-bool tcp_data_lan_is_connected(void)
-{
-    return false;
-}
-
-bool tcp_get_gateway_ip(char *ip_str)
-{
-    return false;
-}
-#endif
 
 void tcp_data_get_stats(uint32_t *packets_sent, uint32_t *packets_failed, uint32_t *bytes_sent)
 {
-    if (packets_sent) *packets_sent = s_packets_sent;
-    if (packets_failed) *packets_failed = s_packets_failed;
-    if (bytes_sent) *bytes_sent = s_bytes_sent;
+    if (packets_sent) *packets_sent = s_serial_packets_sent;
+    if (packets_failed) *packets_failed = 0;  // 串口透传无失败统计
+    if (bytes_sent) *bytes_sent = s_serial_bytes_sent;
 }

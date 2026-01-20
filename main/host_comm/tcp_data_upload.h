@@ -11,16 +11,11 @@ extern "C" {
 #include <stdbool.h>
 
 /* ==================== 功能开关 ==================== */
-/* 注释掉对应行即可关闭该功能 */
-#define ENABLE_WIFI_WAN_TCP                    // 启用WiFi外网TCP上传 (云服务器)
-// #define ENABLE_WIFI_LAN_TCP                 // 启用WiFi局域网TCP上传 (手机热点网关)
+/* 只支持串口4G模块透传TCP，WiFi功能已移除 */
 #define ENABLE_SERIAL_4G_TCP                   // 启用串口0透传4G模块TCP
 
 /* 北京时区定义 */
 #define BEIJING_TIMEZONE "CST-8"
-
-/* WiFi STA重试次数 */
-#define WIFI_STA_MAX_RETRY      10
 
 /* 数据上传配置 */
 #define TCP_SAMPLES_PER_PACKET  100     // 每包100条数据
@@ -153,33 +148,11 @@ typedef struct {
     int8_t m2_state_label;      // 电机2状态标签
 } motor_data_record_t;
 
-/* 网络配置结构体 */
-typedef struct {
-    const char *wifi_ssid;          // WiFi SSID
-    const char *wifi_password;      // WiFi 密码
-    const char *tcp_server_host;    // TCP服务器地址
-    uint16_t tcp_server_port;       // TCP服务器端口
-    uint16_t tcp_lan_server_port;   // 局域网服务器端口
-    uint8_t device_id;              // 设备ID
-} tcp_network_config_t;
-
 /**
- * @brief 设置网络配置（必须在wifi_tcp_init_background之前调用）
- * @param config 网络配置结构体指针
+ * @brief 初始化4G模块透传TCP上传（非阻塞）
+ * @note 此函数立即返回，4G模块初始化在后台进行
  */
-void tcp_set_network_config(const tcp_network_config_t *config);
-
-/**
- * @brief 初始化WiFi STA模式
- * @return ESP_OK成功, ESP_FAIL失败, ESP_ERR_TIMEOUT超时
- */
-esp_err_t wifi_init_sta(void);
-
-/**
- * @brief 在后台任务中初始化WiFi和TCP上传（非阻塞）
- * @note 此函数立即返回，WiFi/TCP初始化在后台进行
- */
-void wifi_tcp_init_background(void);
+void serial_4g_tcp_init_background(void);
 
 /**
  * @brief 获取当前北京时间的毫秒时间戳
@@ -230,23 +203,10 @@ esp_err_t tcp_data_upload_start(void);
 void tcp_data_upload_stop(void);
 
 /**
- * @brief 获取TCP连接状态（公网）
+ * @brief 获取4G模块TCP连接状态
  * @return true已连接，false未连接
  */
 bool tcp_data_is_connected(void);
-
-/**
- * @brief 获取局域网TCP连接状态
- * @return true已连接，false未连接
- */
-bool tcp_data_lan_is_connected(void);
-
-/**
- * @brief 获取网关IP地址（用于局域网连接）
- * @param ip_str 输出缓冲区，至少16字节
- * @return true成功获取，false失败
- */
-bool tcp_get_gateway_ip(char *ip_str);
 
 /**
  * @brief 获取上传统计信息

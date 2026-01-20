@@ -21,8 +21,6 @@
 #include "voice_module.h"
 #include "button_detector.h"
 #include "tcp_data_upload.h"
-#include "tcp_replay_receive.h"
-#include "bt_imu.h"
 
 // ==================== 硬件配置 ====================
 // 电机驱动 (UART2 + RS485)
@@ -50,19 +48,10 @@
 #define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5    // 助力减少按键
 
 // ==================== 功能开关 ====================
-// #define ENABLE_BT_IMU                       // 启用蓝牙IMU
-// TCP相关开关在 tcp_data_upload.h 中定义
+// 4G模块TCP透传功能在 tcp_data_upload.h 中定义
 
-// ==================== 网络配置 ====================
-// WiFi STA模式 (连接外部网络)
-#define WIFI_STA_SSID           "123"
-#define WIFI_STA_PASSWORD       "12345678"
-
-// TCP服务器配置
+// ==================== 设备配置 ====================
 #define DEVICE_ID              1               // 设备编号: 1, 2, 3...
-#define TCP_SERVER_HOST         "8.137.35.154"  // 云服务器地址
-#define TCP_SERVER_PORT         16385           // 云服务器端口
-#define TCP_LAN_SERVER_PORT     8888            // 局域网服务器端口
 
 // ==================== 全局实例 ====================
 VoiceModule voice_module{};
@@ -71,71 +60,6 @@ SpeedFollowMode speed_follow;
 motor_position_buffers_t position_buffers;
 SemaphoreHandle_t motor_params_mutex;
 float global_speed_follow_threshold = 6.0f;
-
-// ==================== 参数回调函数 ====================
-/**
- * @brief 参数设置回调（TCP回放协议调用）
- */
-static void param_set_callback(uint8_t param_id, float value)
-{
-    speed_follow_config_t *m1_cfg = speed_follow.getMotorConfig(1);
-    speed_follow_config_t *m2_cfg = speed_follow.getMotorConfig(2);
-
-    switch (param_id) {
-        // 电机1参数
-        case PARAM_M1_TRIGGER_SPEED:    m1_cfg->trigger_speed = value; break;
-        case PARAM_M1_PHASE1_TORQUE:    m1_cfg->phase1.torque = value; break;
-        case PARAM_M1_PHASE1_KD:        m1_cfg->phase1.kd = value; break;
-        case PARAM_M1_PHASE2_TORQUE:    m1_cfg->phase2.torque = value; break;
-        case PARAM_M1_PHASE2_KD:        m1_cfg->phase2.kd = value; break;
-        case PARAM_M1_PASSIVE_KD:       m1_cfg->passive.kd = value; break;
-        // 电机2参数
-        case PARAM_M2_TRIGGER_SPEED:    m2_cfg->trigger_speed = value; break;
-        case PARAM_M2_PHASE1_TORQUE:    m2_cfg->phase1.torque = value; break;
-        case PARAM_M2_PHASE1_KD:        m2_cfg->phase1.kd = value; break;
-        case PARAM_M2_PHASE2_TORQUE:    m2_cfg->phase2.torque = value; break;
-        case PARAM_M2_PHASE2_KD:        m2_cfg->phase2.kd = value; break;
-        case PARAM_M2_PASSIVE_KD:       m2_cfg->passive.kd = value; break;
-        // 公共参数
-        case PARAM_VELOCITY_SCALE:      speed_follow.setVelocityScale(value); break;
-        case PARAM_VELOCITY_LIMIT:      speed_follow.setVelocityLimit(value); break;
-        case PARAM_PHASE1_TIMEOUT:      speed_follow.setPhase1Timeout((uint32_t)value); break;
-        case PARAM_PHASE2_TIMEOUT:      speed_follow.setPhase2Timeout((uint32_t)value); break;
-        default: break;
-    }
-}
-
-/**
- * @brief 参数查询回调（TCP回放协议调用）
- */
-static float param_get_callback(uint8_t param_id)
-{
-    speed_follow_config_t *m1_cfg = speed_follow.getMotorConfig(1);
-    speed_follow_config_t *m2_cfg = speed_follow.getMotorConfig(2);
-
-    switch (param_id) {
-        // 电机1参数
-        case PARAM_M1_TRIGGER_SPEED:    return m1_cfg->trigger_speed;
-        case PARAM_M1_PHASE1_TORQUE:    return m1_cfg->phase1.torque;
-        case PARAM_M1_PHASE1_KD:        return m1_cfg->phase1.kd;
-        case PARAM_M1_PHASE2_TORQUE:    return m1_cfg->phase2.torque;
-        case PARAM_M1_PHASE2_KD:        return m1_cfg->phase2.kd;
-        case PARAM_M1_PASSIVE_KD:       return m1_cfg->passive.kd;
-        // 电机2参数
-        case PARAM_M2_TRIGGER_SPEED:    return m2_cfg->trigger_speed;
-        case PARAM_M2_PHASE1_TORQUE:    return m2_cfg->phase1.torque;
-        case PARAM_M2_PHASE1_KD:        return m2_cfg->phase1.kd;
-        case PARAM_M2_PHASE2_TORQUE:    return m2_cfg->phase2.torque;
-        case PARAM_M2_PHASE2_KD:        return m2_cfg->phase2.kd;
-        case PARAM_M2_PASSIVE_KD:       return m2_cfg->passive.kd;
-        // 公共参数
-        case PARAM_VELOCITY_SCALE:      return speed_follow.getVelocityScale();
-        case PARAM_VELOCITY_LIMIT:      return speed_follow.getVelocityLimit();
-        case PARAM_PHASE1_TIMEOUT:      return (float)speed_follow.getPhase1Timeout();
-        case PARAM_PHASE2_TIMEOUT:      return (float)speed_follow.getPhase2Timeout();
-        default: return 0.0f;
-    }
-}
 
 // ==================== 电机参数 ====================
 struct MotorParams {
@@ -175,39 +99,14 @@ void motor_control_task(void *pvParameters) {
         motor_params_mutex);
     speed_follow.setDiffBuffers(&position_buffers);
 
-    // 注册TCP回放参数回调
-    tcp_replay_set_param_set_callback(param_set_callback);
-    tcp_replay_set_param_get_callback(param_get_callback);
-
     // 局部变量
     uint32_t loop_count = 0;
     MotorDataA1 motor_data_1{}, motor_data_2{};
     MotorParams current_motor_1, current_motor_2;
     float ch6_max = 0.0f, ch7_max = 0.0f;
     float roll_left = 0.0f, roll_right = 0.0f;
-    replay_sample_t replay_sample{};  // 回放数据
-    bool was_replay_mode = false;     // 上一次是否处于回放模式
-    speed_follow_mode_type_t saved_mode_type = SPEED_FOLLOW_MODE_PROGRAM;  // 保存原始模式
 
     while (1) {
-        // 检查是否处于回放模式
-        bool is_replay_mode = tcp_replay_is_active();
-
-        // 回放模式切换处理
-        if (is_replay_mode && !was_replay_mode) {
-            // 进入回放模式：切换到AI模式并激活
-            saved_mode_type = speed_follow.getModeType();
-            speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
-            speed_follow.enable(true);
-            speed_follow.enableMotorControl(true);
-            speed_follow.startAIRunning();  // 直接进入AI运行状态
-        } else if (!is_replay_mode && was_replay_mode) {
-            // 退出回放模式：停止AI运行并恢复原始模式
-            speed_follow.stopAIRunning();
-            speed_follow.setModeType(saved_mode_type);
-        }
-        was_replay_mode = is_replay_mode;
-
         // 读取电机参数
         if (xSemaphoreTake(motor_params_mutex, portMAX_DELAY) == pdTRUE) {
             current_motor_1 = global_motor_1;
@@ -218,155 +117,65 @@ void motor_control_task(void *pvParameters) {
             current_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         }
 
-        // 获取蓝牙IMU数据
-#ifdef ENABLE_BT_IMU
-        bt_imu_data_t imu_data_left, imu_data_right;
-        bool imu_left_valid = bt_imu_get_data_multi(0, &imu_data_left);
-        bool imu_right_valid = bt_imu_get_data_multi(1, &imu_data_right);
-        if (imu_left_valid) {
-            roll_left = roundf(imu_data_left.roll * 100.0f) / 100.0f;
-        }
-        if (imu_right_valid) {
-            roll_right = roundf(imu_data_right.roll * 100.0f) / 100.0f;
-        }
-#else
+        // 蓝牙IMU功能已禁用
         bool imu_left_valid = false;
         bool imu_right_valid = false;
-#endif
 
-        // ==================== 回放模式：使用回放数据作为电机反馈 ====================
-        if (is_replay_mode && tcp_replay_get_next_sample(&replay_sample)) {
-            // 获取到下一条数据的时间间隔（用于精确时序控制）
-            uint16_t next_interval_ms = tcp_replay_get_next_interval_ms();
-            int64_t sample_start_time = esp_timer_get_time();  // 记录处理开始时间
-
-            // 用回放数据填充电机反馈
-            motor_data_1.id = MOTOR_ID_1;
-            motor_data_1.pos = replay_sample.motor1_pos;
-            motor_data_1.vel = replay_sample.motor1_vel;
-            motor_data_1.t = replay_sample.motor1_torque;
-
-            motor_data_2.id = MOTOR_ID_2;
-            motor_data_2.pos = replay_sample.motor2_pos;
-            motor_data_2.vel = replay_sample.motor2_vel;
-            motor_data_2.t = replay_sample.motor2_torque;
-
-            // 使用回放数据中的roll（如果有效）
-            if (!isnan(replay_sample.roll_left)) {
-                roll_left = replay_sample.roll_left;
-                imu_left_valid = true;
-            }
-            if (!isnan(replay_sample.roll_right)) {
-                roll_right = replay_sample.roll_right;
-                imu_right_valid = true;
-            }
-
-            // 直接注入CSV中的状态标签（跳过波形分析和状态检测）
-            speed_follow.updateAIPhase(replay_sample.m1_state_label, replay_sample.m2_state_label);
-
-            // 调用update来根据注入的状态控制电机参数
-            speed_follow.update(motor_data_1, 0, 0, roll_left, roll_right, imu_left_valid, imu_right_valid);
-            speed_follow.update(motor_data_2, 0, 0, roll_left, roll_right, imu_left_valid, imu_right_valid);
-
-            // 发送控制命令到真实电机（使用算法计算的参数）
-            MotorCmdA1 cmd1;
-            cmd1.id = current_motor_1.motor_id;
-            cmd1.mode = current_motor_1.motor_mode;
-            cmd1.pos = current_motor_1.motor_pos;
-            cmd1.vel = current_motor_1.motor_vel;
-            cmd1.t = current_motor_1.motor_t;
-            cmd1.kp = current_motor_1.motor_kp;
-            cmd1.kd = current_motor_1.motor_kd;
-            MotorDataA1 dummy1{};
-            motor_driver.sendRecv(cmd1, dummy1);
-
-            vTaskDelay(pdMS_TO_TICKS(1));
-
-            MotorCmdA1 cmd2;
-            cmd2.id = current_motor_2.motor_id;
-            cmd2.mode = current_motor_2.motor_mode;
-            cmd2.pos = current_motor_2.motor_pos;
-            cmd2.vel = current_motor_2.motor_vel;
-            cmd2.t = current_motor_2.motor_t;
-            cmd2.kp = current_motor_2.motor_kp;
-            cmd2.kd = current_motor_2.motor_kd;
-            MotorDataA1 dummy2{};
-            motor_driver.sendRecv(cmd2, dummy2);
-
-            // 精确时序控制：计算剩余需要等待的时间
-            if (next_interval_ms > 0) {
-                int64_t elapsed_us = esp_timer_get_time() - sample_start_time;
-                int32_t remaining_ms = next_interval_ms - (int32_t)(elapsed_us / 1000);
-                if (remaining_ms > 0) {
-                    vTaskDelay(pdMS_TO_TICKS(remaining_ms));
-                }
-            }
-            // 跳过循环末尾的固定延时
-            continue;
-        }
         // ==================== 正常模式：使用真实电机反馈 ====================
-        else if (!is_replay_mode) {
-            // 控制电机1
-            MotorCmdA1 cmd1;
-            cmd1.id = current_motor_1.motor_id;
-            cmd1.mode = current_motor_1.motor_mode;
-            cmd1.pos = current_motor_1.motor_pos;
-            cmd1.vel = current_motor_1.motor_vel;
-            cmd1.t = current_motor_1.motor_t;
-            cmd1.kp = current_motor_1.motor_kp;
-            cmd1.kd = current_motor_1.motor_kd;
+        // 控制电机1
+        MotorCmdA1 cmd1;
+        cmd1.id = current_motor_1.motor_id;
+        cmd1.mode = current_motor_1.motor_mode;
+        cmd1.pos = current_motor_1.motor_pos;
+        cmd1.vel = current_motor_1.motor_vel;
+        cmd1.t = current_motor_1.motor_t;
+        cmd1.kp = current_motor_1.motor_kp;
+        cmd1.kd = current_motor_1.motor_kd;
 
-            esp_err_t err1 = motor_driver.sendRecv(cmd1, motor_data_1);
-            if (err1 == ESP_OK) {
-                uint32_t timestamp = esp_timer_get_time() / 1000;
-                position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(1));
-
-            // 控制电机2
-            MotorCmdA1 cmd2;
-            cmd2.id = current_motor_2.motor_id;
-            cmd2.mode = current_motor_2.motor_mode;
-            cmd2.pos = current_motor_2.motor_pos;
-            cmd2.vel = current_motor_2.motor_vel;
-            cmd2.t = current_motor_2.motor_t;
-            cmd2.kp = current_motor_2.motor_kp;
-            cmd2.kd = current_motor_2.motor_kd;
-
-            esp_err_t err2 = motor_driver.sendRecv(cmd2, motor_data_2);
-            if (err2 == ESP_OK) {
-                uint32_t timestamp = esp_timer_get_time() / 1000;
-                position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
-            }
-        } else {
-            // 回放模式但没有数据，等待
-            vTaskDelay(pdMS_TO_TICKS(1));
-            continue;
-        }
-
-        // 波形分析与速度跟随（仅正常模式执行，回放模式已在上面直接注入状态）
-        if (!is_replay_mode) {
-            wave_analysis_result_t motor1_wave, motor2_wave;
-            float motor1_diff = 0.0f, motor2_diff = 0.0f;
+        esp_err_t err1 = motor_driver.sendRecv(cmd1, motor_data_1);
+        if (err1 == ESP_OK) {
             uint32_t timestamp = esp_timer_get_time() / 1000;
-
-            if (position_buffer_analyze_motor1_wave(&position_buffers, &motor1_wave)) {
-                motor1_diff = motor1_wave.peak_valley_diff;
-                diff_buffer_add_ch6(&position_buffers, motor1_diff, timestamp);
-            }
-            if (position_buffer_analyze_motor2_wave(&position_buffers, &motor2_wave)) {
-                motor2_diff = motor2_wave.peak_valley_diff;
-                diff_buffer_add_ch7(&position_buffers, motor2_diff, timestamp);
-            }
-
-            ch6_max = diff_buffer_get_ch6_max(&position_buffers);
-            ch7_max = diff_buffer_get_ch7_max(&position_buffers);
-
-            speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
-            speed_follow.update(motor_data_1, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
-            speed_follow.update(motor_data_2, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
+            position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
         }
+
+        vTaskDelay(pdMS_TO_TICKS(1));
+
+        // 控制电机2
+        MotorCmdA1 cmd2;
+        cmd2.id = current_motor_2.motor_id;
+        cmd2.mode = current_motor_2.motor_mode;
+        cmd2.pos = current_motor_2.motor_pos;
+        cmd2.vel = current_motor_2.motor_vel;
+        cmd2.t = current_motor_2.motor_t;
+        cmd2.kp = current_motor_2.motor_kp;
+        cmd2.kd = current_motor_2.motor_kd;
+
+        esp_err_t err2 = motor_driver.sendRecv(cmd2, motor_data_2);
+        if (err2 == ESP_OK) {
+            uint32_t timestamp = esp_timer_get_time() / 1000;
+            position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
+        }
+
+        // 波形分析与速度跟随
+        wave_analysis_result_t motor1_wave, motor2_wave;
+        float motor1_diff = 0.0f, motor2_diff = 0.0f;
+        uint32_t timestamp = esp_timer_get_time() / 1000;
+
+        if (position_buffer_analyze_motor1_wave(&position_buffers, &motor1_wave)) {
+            motor1_diff = motor1_wave.peak_valley_diff;
+            diff_buffer_add_ch6(&position_buffers, motor1_diff, timestamp);
+        }
+        if (position_buffer_analyze_motor2_wave(&position_buffers, &motor2_wave)) {
+            motor2_diff = motor2_wave.peak_valley_diff;
+            diff_buffer_add_ch7(&position_buffers, motor2_diff, timestamp);
+        }
+
+        ch6_max = diff_buffer_get_ch6_max(&position_buffers);
+        ch7_max = diff_buffer_get_ch7_max(&position_buffers);
+
+        speed_follow.checkThresholdAndActivate(ch6_max, ch7_max);
+        speed_follow.update(motor_data_1, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
+        speed_follow.update(motor_data_2, ch6_max, ch7_max, roll_left, roll_right, imu_left_valid, imu_right_valid);
 
         // 计算采样间隔
         static int64_t hz_start_time = 0;
@@ -410,30 +219,14 @@ extern "C" void app_main() {
     // 初始化语音模块
     voice_module_init(&voice_module, VOICE_UART_NUM, VOICE_TX_PIN, VOICE_RX_PIN, VOICE_BAUDRATE);
 
-    // 初始化蓝牙IMU
-#ifdef ENABLE_BT_IMU
-    bt_imu_init_multi();
-#endif
-
     // 创建互斥锁
     motor_params_mutex = xSemaphoreCreateMutex();
     if (motor_params_mutex == NULL) {
         return;
     }
 
-    // 设置网络配置（必须在wifi_tcp_init_background之前）
-    tcp_network_config_t net_config = {
-        .wifi_ssid = WIFI_STA_SSID,
-        .wifi_password = WIFI_STA_PASSWORD,
-        .tcp_server_host = TCP_SERVER_HOST,
-        .tcp_server_port = TCP_SERVER_PORT,
-        .tcp_lan_server_port = TCP_LAN_SERVER_PORT,
-        .device_id = DEVICE_ID
-    };
-    tcp_set_network_config(&net_config);
-
-    // 后台初始化WiFi和TCP
-    wifi_tcp_init_background();
+    // 后台初始化4G模块TCP透传
+    serial_4g_tcp_init_background();
 
     // 配置4G模块复位引脚 (GPIO10) - 高电平正常工作，拉低复位
     gpio_config_t io_conf_4g = {
