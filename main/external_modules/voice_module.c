@@ -2,7 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "VOICE_MODULE";
+// static const char *TAG = "VOICE_MODULE";  // 运行时日志已禁用，TAG未使用
 
 // UTF-8到GB2312的简化映射表
 static const char* utf8_gb2312_map[][2] = {

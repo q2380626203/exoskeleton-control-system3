@@ -1,5 +1,6 @@
 #include "wifi_webserver.h"
 #include "webpage.h"
+#include "speed_follow_wrapper.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -7,12 +8,33 @@
 #include "esp_timer.h"
 #include "esp_mac.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_netif.h"
 #include "esp_http_server.h"
 #include "lwip/ip4_addr.h"
 #include <string.h>
+#include <stdio.h>
 
-static const char *TAG = "WIFI_WEBSERVER";
+// static const char *TAG = "WIFI_WEBSERVER";  // 运行时日志已禁用，TAG未使用
+
+/* 外部电机参数访问 */
+static float* g_motor1_pos = NULL;
+static float* g_motor2_pos = NULL;
+static SemaphoreHandle_t g_motor_mutex = NULL;
+static void* g_speed_follow = NULL;
+
+
+/**
+ * @brief 设置外部电机参数和互斥锁的访问接口
+ */
+void webserver_set_motor_access(float* motor1_pos, float* motor2_pos,
+                                 SemaphoreHandle_t mutex, void* speed_follow_ptr) {
+    g_motor1_pos = motor1_pos;
+    g_motor2_pos = motor2_pos;
+    g_motor_mutex = mutex;
+    g_speed_follow = speed_follow_ptr;
+}
+
 
 /* WiFi事件处理 */
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -98,19 +120,14 @@ esp_err_t wifi_init_softap(void)
     // 范围: 8 (2dBm, 最低) 到 78 (19.5dBm, 最高)
     // 默认值通常为78 (19.5dBm)，这里设置为40 (10dBm) 以降低功耗
     ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(40)); // 10dBm，约为默认功率的一半
-    ESP_LOGI(TAG, "WiFi发射功率已设置为10dBm (降低功耗模式)");
+    // ESP_LOGI(TAG, "WiFi发射功率已设置为10dBm (降低功耗模式)");  // 运行时日志已禁用
 
-    ESP_LOGI(TAG, "WiFi热点已启动");
-    ESP_LOGI(TAG, "SSID: %s", WIFI_AP_SSID);
-    ESP_LOGI(TAG, "密码: %s", WIFI_AP_PASSWORD);
-    ESP_LOGI(TAG, "IP地址: 192.168.4.1");
+    // ESP_LOGI(TAG, "WiFi热点已启动");  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "SSID: %s", WIFI_AP_SSID);  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "密码: %s", WIFI_AP_PASSWORD);  // 运行时日志已禁用
+    // ESP_LOGI(TAG, "IP地址: 192.168.4.1");  // 运行时日志已禁用
 
     return ESP_OK;
-}
-
-uint32_t get_system_uptime(void)
-{
-    return (uint32_t)(esp_timer_get_time() / 1000000);
 }
 
 /* HTTP GET处理函数 - 主页 */
@@ -121,94 +138,140 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* HTTP GET处理函数 - 命令API */
-static esp_err_t command_get_handler(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Command handler not implemented\"}");
-    return ESP_OK;
-}
 
-/* HTTP GET处理函数 - 状态API */
-static esp_err_t status_get_handler(httpd_req_t *req)
-{
-    char response[128];
-    uint32_t uptime = get_system_uptime();
 
-    snprintf(response, sizeof(response),
-             "{\"status\":\"ok\",\"uptime\":%lu,\"ip\":\"192.168.4.1\"}",
-             (unsigned long)uptime);
+
+/* HTTP GET处理函数 - 读取电机参数API */
+static esp_err_t get_motor_params_handler(httpd_req_t *req)
+{
+    char response[300];
+    float motor1_pos = 0.0f;
+    float motor2_pos = 0.0f;
+
+    if (g_motor_mutex && g_motor1_pos && g_motor2_pos) {
+        if (xSemaphoreTake(g_motor_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            motor1_pos = *g_motor1_pos;
+            motor2_pos = *g_motor2_pos;
+            xSemaphoreGive(g_motor_mutex);
+
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"ok\",\"motor1_pos\":%.6f,\"motor2_pos\":%.6f}",
+                     motor1_pos, motor2_pos);
+        } else {
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"error\",\"message\":\"Mutex timeout\"}");
+        }
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"message\":\"Motor access not initialized\"}");
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, response);
     return ESP_OK;
 }
 
-/* HTTP GET处理函数 - 参数设置API */
-static esp_err_t params_get_handler(httpd_req_t *req)
+/* HTTP GET处理函数 - 获取当前参数API */
+static esp_err_t get_current_params_handler(httpd_req_t *req)
 {
+    char response[256];
+
+    if (g_speed_follow) {
+        float torque = speed_follow_get_current_torque(g_speed_follow);
+        float kd = speed_follow_get_current_kd(g_speed_follow);
+
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"torque\":%.2f,\"kd\":%.3f}",
+                 torque, kd);
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"message\":\"SpeedFollow not initialized\"}");
+    }
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Params handler not implemented\"}");
+    httpd_resp_sendstr(req, response);
     return ESP_OK;
 }
 
-/* HTTP GET处理函数 - 电机参数设置API */
-static esp_err_t motor_params_get_handler(httpd_req_t *req)
+/* HTTP GET处理函数 - 调整力矩API */
+static esp_err_t adjust_torque_handler(httpd_req_t *req)
 {
+    char response[256];
+    char query[64];
+
+    // 获取查询参数
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char action[16];
+        if (httpd_query_key_value(query, "action", action, sizeof(action)) == ESP_OK) {
+            bool increase = (strcmp(action, "increase") == 0);
+
+            // 调用SpeedFollowMode的adjustTorque方法
+            if (g_speed_follow) {
+                float new_torque = speed_follow_adjust_torque(g_speed_follow, increase);
+
+                snprintf(response, sizeof(response),
+                         "{\"status\":\"ok\",\"torque\":%.2f}", new_torque);
+            } else {
+                snprintf(response, sizeof(response),
+                         "{\"status\":\"error\",\"message\":\"SpeedFollow not initialized\"}");
+            }
+        } else {
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"error\",\"message\":\"Missing action parameter\"}");
+        }
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"message\":\"No query string\"}");
+    }
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Motor params handler not implemented\"}");
+    httpd_resp_sendstr(req, response);
     return ESP_OK;
 }
 
-/* HTTP GET处理函数 - 读取电机参数API */
-static esp_err_t get_motor_params_handler(httpd_req_t *req)
+/* HTTP GET处理函数 - 调整Kd API */
+static esp_err_t adjust_kd_handler(httpd_req_t *req)
 {
+    char response[256];
+    char query[64];
+
+    // 获取查询参数
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char action[16];
+        if (httpd_query_key_value(query, "action", action, sizeof(action)) == ESP_OK) {
+            bool increase = (strcmp(action, "increase") == 0);
+
+            // 调用SpeedFollowMode的adjustKd方法
+            if (g_speed_follow) {
+                float new_kd = speed_follow_adjust_kd(g_speed_follow, increase);
+
+                snprintf(response, sizeof(response),
+                         "{\"status\":\"ok\",\"kd\":%.3f}", new_kd);
+            } else {
+                snprintf(response, sizeof(response),
+                         "{\"status\":\"error\",\"message\":\"SpeedFollow not initialized\"}");
+            }
+        } else {
+            snprintf(response, sizeof(response),
+                     "{\"status\":\"error\",\"message\":\"Missing action parameter\"}");
+        }
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"error\",\"message\":\"No query string\"}");
+    }
+
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"Get motor params not implemented\"}");
+    httpd_resp_sendstr(req, response);
     return ESP_OK;
 }
 
-/* HTTP GET处理函数 - 状态机状态API */
-static esp_err_t state_get_handler(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"status\":\"error\",\"message\":\"State getter not implemented\"}");
-    return ESP_OK;
-}
+
 
 /* URI处理器配置 */
 static const httpd_uri_t root = {
     .uri       = "/",
     .method    = HTTP_GET,
     .handler   = root_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t api_command = {
-    .uri       = "/api/command",
-    .method    = HTTP_GET,
-    .handler   = command_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t api_status = {
-    .uri       = "/api/status",
-    .method    = HTTP_GET,
-    .handler   = status_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t api_params = {
-    .uri       = "/api/params",
-    .method    = HTTP_GET,
-    .handler   = params_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t api_motor_params = {
-    .uri       = "/api/motor_params",
-    .method    = HTTP_GET,
-    .handler   = motor_params_get_handler,
     .user_ctx  = NULL
 };
 
@@ -219,12 +282,27 @@ static const httpd_uri_t api_get_motor_params = {
     .user_ctx  = NULL
 };
 
-static const httpd_uri_t api_state = {
-    .uri       = "/api/state",
+static const httpd_uri_t api_get_current_params = {
+    .uri       = "/api/get_current_params",
     .method    = HTTP_GET,
-    .handler   = state_get_handler,
+    .handler   = get_current_params_handler,
     .user_ctx  = NULL
 };
+
+static const httpd_uri_t api_adjust_torque = {
+    .uri       = "/api/adjust_torque",
+    .method    = HTTP_GET,
+    .handler   = adjust_torque_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t api_adjust_kd = {
+    .uri       = "/api/adjust_kd",
+    .method    = HTTP_GET,
+    .handler   = adjust_kd_handler,
+    .user_ctx  = NULL
+};
+
 
 httpd_handle_t start_webserver(void)
 {
@@ -232,25 +310,24 @@ httpd_handle_t start_webserver(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEBSERVER_PORT;
     config.lru_purge_enable = true;
+    config.uri_match_fn = httpd_uri_match_wildcard;
 
     /* 启动HTTP服务器 */
-    ESP_LOGI(TAG, "正在启动Web服务器，端口: %d", config.server_port);
+    // ESP_LOGI(TAG, "正在启动Web服务器，端口: %d", config.server_port);  // 运行时日志已禁用
     if (httpd_start(&server, &config) == ESP_OK) {
         /* 注册URI处理器 */
-        ESP_LOGI(TAG, "注册URI处理器");
+        // ESP_LOGI(TAG, "注册URI处理器");  // 运行时日志已禁用
         httpd_register_uri_handler(server, &root);
-        httpd_register_uri_handler(server, &api_command);
-        httpd_register_uri_handler(server, &api_params);
-        httpd_register_uri_handler(server, &api_motor_params);
         httpd_register_uri_handler(server, &api_get_motor_params);
-        httpd_register_uri_handler(server, &api_status);
-        httpd_register_uri_handler(server, &api_state);
+        httpd_register_uri_handler(server, &api_get_current_params);
+        httpd_register_uri_handler(server, &api_adjust_torque);
+        httpd_register_uri_handler(server, &api_adjust_kd);
 
-        ESP_LOGI(TAG, "Web服务器启动成功");
+        // ESP_LOGI(TAG, "Web服务器启动成功");  // 运行时日志已禁用
         return server;
     }
 
-    ESP_LOGE(TAG, "Web服务器启动失败");
+    // ESP_LOGE(TAG, "Web服务器启动失败");  // 运行时日志已禁用
     return NULL;
 }
 
@@ -258,6 +335,6 @@ void stop_webserver(httpd_handle_t server)
 {
     if (server) {
         httpd_stop(server);
-        ESP_LOGI(TAG, "Web服务器已停止");
+        // ESP_LOGI(TAG, "Web服务器已停止");  // 运行时日志已禁用
     }
 }

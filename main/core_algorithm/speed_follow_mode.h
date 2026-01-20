@@ -75,7 +75,8 @@ typedef struct {
     } passive;
 } speed_follow_config_t;
 
-// IMU滑动窗口数据结构
+// IMU滑动窗口数据结构（已废弃 - IMU功能已移除）
+// 保留类型定义以保持 API 兼容性
 typedef struct {
     float data[5];      // 滑动窗口数据
     int count;          // 当前窗口中的有效数据数量
@@ -86,11 +87,6 @@ class SpeedFollowMode {
 private:
     // 内部使用的私有函数
     void setMotorParams(uint8_t motor_id, uint8_t mode, float pos, float vel, float torque, float kp, float kd);
-
-    // IMU滑动窗口辅助函数
-    void initRollWindow(imu_roll_window_t& window);
-    void addRollValue(imu_roll_window_t& window, float value);
-    bool findRollDecrease(const imu_roll_window_t& window, float threshold);
 
 public:
     SpeedFollowMode();
@@ -116,9 +112,6 @@ public:
     // 更新电机数据，检测触发条件，并修改全局参数
     void update(const MotorDataA1& motor_data, float ch6_max, float ch7_max,
                 float roll_left, float roll_right, bool imu_left_valid, bool imu_right_valid);
-
-    // 按键触发进入按键等待状态
-    void startButtonWaiting();
 
     // 直接进入AI运行状态（用于回放模式）
     void startAIRunning();
@@ -160,6 +153,16 @@ public:
     // 返回调整后的电机1助力值（用于语音播报）
     float adjustTorque(bool increase);
 
+    // Web接口：调整Kd参数（增加或减少phase1和phase2的kd）
+    // 返回调整后的电机1 phase1的kd值
+    float adjustKd(bool increase);
+
+    // Web接口：获取当前电机1 phase1的torque值
+    float getCurrentTorque() const { return _config_motor1.phase1.torque; }
+
+    // Web接口：获取当前电机1 phase1的kd值
+    float getCurrentKd() const { return _config_motor1.phase1.kd; }
+
     // 检查是否处于静止状态（用于按键触发语音播放）
     bool isStationary() const { return _is_stationary; }
 
@@ -173,19 +176,11 @@ public:
     void clearBufferTriggeredFlag() { _is_buffer_triggered = false; }
 
     // ===== 双模式切换接口 =====
-    // 模式切换（仅在IDLE状态允许）
-    void setModeType(speed_follow_mode_type_t mode);
     speed_follow_mode_type_t getModeType() const { return _mode_type; }
-
-    // AI推理结果注入（从main.cpp调用）
-    void updateAIPhase(int m1_phase, int m2_phase);
 
     // 获取当前判断的阶段（用于网页显示）
     int getCurrentM1Phase() const;
     int getCurrentM2Phase() const;
-
-    // IMU滑动窗口数据更新（从main.cpp调用）
-    void updateRollValue(float roll_left, float roll_right, bool left_valid, bool right_valid);
 
     // ===== 公共参数访问接口（用于TCP参数调整） =====
     // 速度缩放因子
@@ -283,14 +278,6 @@ private:
     uint32_t _ai_cycle_start_time;        // 当前周期开始时间
     uint8_t _ai_current_leg;              // 当前抬腿的腿（1或2）
     float _ai_peak_velocity;              // AI模式峰值速度（默认40.0 rad/s）
-
-    // ===== IMU模式相关 =====
-    float _imu_roll_threshold;      // IMU roll值变化阈值（默认5.0度）
-
-    // IMU滑动窗口（5个数据点）
-    static const int IMU_WINDOW_SIZE = 5;
-    imu_roll_window_t _roll_left_window;
-    imu_roll_window_t _roll_right_window;
 };
 
 #endif // SPEED_FOLLOW_MODE_H

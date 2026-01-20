@@ -1,721 +1,330 @@
 #ifndef WEBPAGE_H
 #define WEBPAGE_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-const char webpage_html[] = R"rawliteral(
+static const char webpage_html[] = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>电机速度跟随控制系统</title>
+    <title>外骨骼控制系统</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
         body {
-            font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            font-family: 'Arial', sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }
-
         .container {
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-            padding: 25px;
-            max-width: 900px;
+            max-width: 800px;
             margin: 0 auto;
         }
-
-        h1 {
+        .header {
             text-align: center;
-            color: #333;
-            margin-bottom: 25px;
-            font-size: 26px;
+            color: white;
+            margin-bottom: 30px;
         }
-
-        .section-title {
-            font-size: 18px;
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .card-title {
+            font-size: 1.5em;
             color: #667eea;
-            margin: 20px 0 10px;
-            font-weight: bold;
-            cursor: pointer;
-            user-select: none;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
         }
-
-        .section-title:hover {
-            color: #764ba2;
+        .motor-display {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
         }
-
-        .collapsible-content {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease;
-        }
-
-        .collapsible-content.active {
-            max-height: 3000px;
-        }
-
-        /* 控制按钮区 */
-        .control-section {
+        .motor-item {
             background: #f8f9fa;
             padding: 20px;
             border-radius: 10px;
-            margin-bottom: 20px;
-        }
-
-        .button-group {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-
-        .btn {
-            padding: 12px 20px;
-            font-size: 16px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        .btn-success {
-            background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-            color: #333;
-        }
-
-        .btn-danger {
-            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-            color: white;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .btn-warning {
-            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-            color: #333;
-        }
-
-        .btn-secondary {
-            background: linear-gradient(135deg, #a8c0ff 0%, #c9d6ff 100%);
-            color: #333;
-        }
-
-        /* 模式按钮激活状态 */
-        .btn.active {
-            box-shadow: 0 0 10px rgba(0, 123, 255, 0.5);
-            border: 2px solid #007bff;
-            font-weight: bold;
-        }
-
-        /* 阶段显示样式 */
-        .phase-badge {
-            padding: 6px 14px;
-            border-radius: 12px;
-            font-weight: 600;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            font-size: 13px;
-        }
-
-        /* 状态显示区 */
-        .status-card {
-            background: linear-gradient(135deg, #e0e7ff 0%, #f3e7ff 100%);
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        }
-
-        .status-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            padding: 10px;
-            background: white;
-            border-radius: 6px;
-        }
-
-        .status-label {
-            font-weight: bold;
-            color: #555;
-            font-size: 14px;
-        }
-
-        .status-value {
-            font-size: 16px;
-            color: #667eea;
-            font-weight: bold;
-        }
-
-        .status-badge {
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: bold;
-        }
-
-        .badge-idle { background: #e0e0e0; color: #666; }
-        .badge-waiting { background: #fff3cd; color: #856404; }
-        .badge-working { background: #d1ecf1; color: #0c5460; }
-        .badge-phase { background: #d4edda; color: #155724; }
-
-        /* 助力显示 */
-        .torque-display {
             text-align: center;
-            padding: 15px;
-            background: white;
-            border-radius: 8px;
-            margin-bottom: 15px;
         }
-
-        .torque-value {
-            font-size: 32px;
+        .motor-label {
+            font-size: 1.1em;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        .motor-value {
+            font-size: 2.5em;
             font-weight: bold;
             color: #667eea;
             margin: 10px 0;
         }
-
-        /* 参数调整区 */
-        .param-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        .motor-unit {
+            font-size: 0.9em;
+            color: #999;
+        }
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn:active {
+            transform: translateY(0);
+        }
+        .control-group {
+            margin-bottom: 25px;
+        }
+        .control-label {
+            font-size: 1.1em;
+            color: #333;
+            margin-bottom: 10px;
+            display: block;
+        }
+        .control-row {
+            display: flex;
+            align-items: center;
             gap: 15px;
             margin-bottom: 15px;
         }
-
-        .param-group {
-            background: #f8f9fa;
+        .control-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #667eea;
+            min-width: 80px;
+            text-align: center;
+        }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+        }
+        .btn-small {
+            padding: 10px 20px;
+            flex: 1;
+        }
+        .status-info {
+            background: #e8f5e9;
             padding: 15px;
             border-radius: 8px;
-            margin-bottom: 15px;
-        }
-
-        .param-group h3 {
-            color: #555;
-            font-size: 14px;
-            margin-bottom: 10px;
-        }
-
-        .input-group {
-            margin-bottom: 12px;
-        }
-
-        .input-group label {
-            display: block;
-            margin-bottom: 5px;
-            color: #666;
-            font-size: 13px;
-            font-weight: bold;
-        }
-
-        .input-group input {
-            width: 100%;
-            padding: 8px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-
-        .input-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .response {
             margin-top: 15px;
-            padding: 12px;
-            border-radius: 6px;
-            background: #e7f3ff;
-            color: #0066cc;
-            display: none;
-            font-size: 13px;
+            color: #2e7d32;
+            text-align: center;
         }
-
-        .response.show {
-            display: block;
-        }
-
-        .response.error {
-            background: #ffe7e7;
-            color: #cc0000;
-        }
-
-        .response.success {
-            background: #e7ffe7;
-            color: #00cc00;
+        .range-display {
+            font-size: 0.85em;
+            color: #999;
+            margin-top: 5px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🤖 电机速度跟随控制系统</h1>
+        <div class="header">
+            <h1>🦾 登山外骨骼</h1>
+        </div>
 
-        <!-- 控制按钮区 -->
-        <div class="control-section">
-            <h3 style="margin-bottom: 15px; color: #333;">模式控制</h3>
-            <div class="button-group" style="grid-template-columns: repeat(3, 1fr);">
-                <button class="btn btn-primary" id="btn-imu-mode" onclick="sendCommand('mode_imu')">🔍 IMU模式</button>
-                <button class="btn btn-primary" id="btn-ai-mode" onclick="sendCommand('mode_ai')">🤖 AI模式</button>
-                <button class="btn btn-secondary" id="btn-program-mode" onclick="sendCommand('mode_program')">⚙️ 程序模式</button>
+        <!-- 电机位置显示 -->
+        <div class="card">
+            <div class="card-title">📊 双腿位置</div>
+            <div class="motor-display">
+                <div class="motor-item">
+                    <div class="motor-label">左腿</div>
+                    <div class="motor-value" id="motor1-angle">0.0</div>
+                    <div class="motor-unit">度 (°)</div>
+                </div>
+                <div class="motor-item">
+                    <div class="motor-label">右腿</div>
+                    <div class="motor-value" id="motor2-angle">0.0</div>
+                    <div class="motor-unit">度 (°)</div>
+                </div>
             </div>
-
-            <h3 style="margin-bottom: 15px; color: #333;">基本控制</h3>
-            <div class="button-group">
-                <button class="btn btn-success" onclick="sendCommand('start')">▶ 开启</button>
-                <button class="btn btn-danger" onclick="sendCommand('stop')">⏸ 关闭</button>
+            <button class="btn" onclick="setZeroPosition()">🎯 设置当前位置为0度</button>
+            <div class="status-info" id="zero-status" style="display:none;">
+                ✓ 零点已设置
             </div>
-
-            <h3 style="margin-bottom: 15px; color: #333;">助力调整</h3>
-            <div class="button-group">
-                <button class="btn btn-primary" onclick="sendCommand('assist_up')">➕ 增加助力</button>
-                <button class="btn btn-warning" onclick="sendCommand('assist_down')">➖ 减少助力</button>
-            </div>
-
-            <!-- 助力值显示 -->
-            <div class="torque-display">
-                <div style="font-size: 14px; color: #666;">当前助力值</div>
-                <div class="torque-value" id="torque-value">0.0</div>
+            <div class="status-info" id="zero-error" style="display:none;background:#ffebee;color:#c62828;">
+                ✗ 设置失败
             </div>
         </div>
 
-        <!-- 状态机显示区 -->
-        <div class="status-card">
-            <h3 style="margin-bottom: 15px; color: #333;">📊 状态机信息</h3>
-            <div class="status-row">
-                <span class="status-label">当前模式:</span>
-                <span class="status-badge" id="mode-text">AI模式</span>
+        <!-- 参数调整 -->
+        <div class="card">
+            <div class="card-title">⚙️ 参数调整</div>
+
+            <!-- 力矩调整 -->
+            <div class="control-group">
+                <label class="control-label">助力力矩 (Torque)</label>
+                <div class="control-row">
+                    <div class="control-value" id="torque-value">1.5</div>
+                    <div class="btn-group">
+                        <button class="btn btn-small" onclick="adjustTorque(false)">➖ 减小</button>
+                        <button class="btn btn-small" onclick="adjustTorque(true)">➕ 增加</button>
+                    </div>
+                </div>
             </div>
-            <div class="status-row">
-                <span class="status-label">当前状态:</span>
-                <span class="status-badge badge-idle" id="state-text">空闲</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">m1阶段:</span>
-                <span class="phase-badge" id="m1-phase">静止</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">m2阶段:</span>
-                <span class="phase-badge" id="m2-phase">静止</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">活动电机:</span>
-                <span class="status-value" id="active-motor">无</span>
-            </div>
-            <div class="status-row">
-                <span class="status-label">抬腿电机:</span>
-                <span class="status-value" id="lifting-motor">无</span>
+
+            <!-- Kd调整 -->
+            <div class="control-group">
+                <label class="control-label">阻尼系数 (Kd)</label>
+                <div class="control-row">
+                    <div class="control-value" id="kd-value">0.08</div>
+                    <div class="btn-group">
+                        <button class="btn btn-small" onclick="adjustKd(false)">➖ 减小</button>
+                        <button class="btn btn-small" onclick="adjustKd(true)">➕ 增加</button>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- 全局参数 -->
-        <h2 class="section-title" onclick="toggleSection('global-params')">▼ 全局参数</h2>
-        <div id="global-params" class="collapsible-content">
-            <div class="input-group">
-                <label>速度跟随阈值 (global_speed_follow_threshold):</label>
-                <input type="number" id="threshold" step="0.1" value="6.0">
-            </div>
-            <button class="btn btn-primary" style="width: 100%;" onclick="setThreshold()">应用阈值</button>
-        </div>
-
-        <!-- 电机1参数 -->
-        <h2 class="section-title" onclick="toggleSection('motor1-params')">▼ 电机1参数</h2>
-        <div id="motor1-params" class="collapsible-content">
-            <div class="input-group">
-                <label>触发速度 (trigger_speed):</label>
-                <input type="number" id="m1_trigger_speed" step="0.01" value="5.0">
-            </div>
-
-            <div class="param-grid">
-                <div class="input-group">
-                    <label>Phase1持续时间(ms):</label>
-                    <input type="number" id="m1_phase1_duration" value="500">
-                </div>
-                <div class="input-group">
-                    <label>Phase2持续时间(ms):</label>
-                    <input type="number" id="m1_phase2_duration" value="350">
-                </div>
-                <div class="input-group">
-                    <label>等待时间(ms):</label>
-                    <input type="number" id="m1_waiting_duration" value="300">
-                </div>
-                <div class="input-group">
-                    <label>空闲时间(ms):</label>
-                    <input type="number" id="m1_idle_duration" value="100">
-                </div>
-            </div>
-
-            <div class="param-group">
-                <h3>Phase1 参数</h3>
-                <div class="param-grid">
-                    <div class="input-group">
-                        <label>Vel:</label>
-                        <input type="number" id="m1_p1_vel" step="0.1" value="10.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Torque:</label>
-                        <input type="number" id="m1_p1_torque" step="0.1" value="0.7">
-                    </div>
-                    <div class="input-group">
-                        <label>Kp:</label>
-                        <input type="number" id="m1_p1_kp" step="0.01" value="0.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Kd:</label>
-                        <input type="number" id="m1_p1_kd" step="0.01" value="0.08">
-                    </div>
-                </div>
-            </div>
-
-            <div class="param-group">
-                <h3>Phase2 参数</h3>
-                <div class="param-grid">
-                    <div class="input-group">
-                        <label>Vel:</label>
-                        <input type="number" id="m1_p2_vel" step="0.1" value="-10.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Torque:</label>
-                        <input type="number" id="m1_p2_torque" step="0.1" value="-0.3">
-                    </div>
-                    <div class="input-group">
-                        <label>Kp:</label>
-                        <input type="number" id="m1_p2_kp" step="0.01" value="0.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Kd:</label>
-                        <input type="number" id="m1_p2_kd" step="0.01" value="0.03">
-                    </div>
-                </div>
-            </div>
-
-            <div class="button-group" style="margin-top: 10px;">
-                <button class="btn btn-warning" onclick="loadMotor1Params()">读取当前值</button>
-                <button class="btn btn-primary" onclick="setMotor1Params()">应用参数</button>
-            </div>
-        </div>
-
-        <!-- 电机2参数 -->
-        <h2 class="section-title" onclick="toggleSection('motor2-params')">▼ 电机2参数</h2>
-        <div id="motor2-params" class="collapsible-content">
-            <div class="input-group">
-                <label>触发速度 (trigger_speed):</label>
-                <input type="number" id="m2_trigger_speed" step="0.01" value="-5.0">
-            </div>
-
-            <div class="param-grid">
-                <div class="input-group">
-                    <label>Phase1持续时间(ms):</label>
-                    <input type="number" id="m2_phase1_duration" value="500">
-                </div>
-                <div class="input-group">
-                    <label>Phase2持续时间(ms):</label>
-                    <input type="number" id="m2_phase2_duration" value="350">
-                </div>
-                <div class="input-group">
-                    <label>等待时间(ms):</label>
-                    <input type="number" id="m2_waiting_duration" value="300">
-                </div>
-                <div class="input-group">
-                    <label>空闲时间(ms):</label>
-                    <input type="number" id="m2_idle_duration" value="100">
-                </div>
-            </div>
-
-            <div class="param-group">
-                <h3>Phase1 参数</h3>
-                <div class="param-grid">
-                    <div class="input-group">
-                        <label>Vel:</label>
-                        <input type="number" id="m2_p1_vel" step="0.1" value="-10.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Torque:</label>
-                        <input type="number" id="m2_p1_torque" step="0.1" value="-0.7">
-                    </div>
-                    <div class="input-group">
-                        <label>Kp:</label>
-                        <input type="number" id="m2_p1_kp" step="0.01" value="0.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Kd:</label>
-                        <input type="number" id="m2_p1_kd" step="0.01" value="0.08">
-                    </div>
-                </div>
-            </div>
-
-            <div class="param-group">
-                <h3>Phase2 参数</h3>
-                <div class="param-grid">
-                    <div class="input-group">
-                        <label>Vel:</label>
-                        <input type="number" id="m2_p2_vel" step="0.1" value="10.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Torque:</label>
-                        <input type="number" id="m2_p2_torque" step="0.1" value="0.3">
-                    </div>
-                    <div class="input-group">
-                        <label>Kp:</label>
-                        <input type="number" id="m2_p2_kp" step="0.01" value="0.0">
-                    </div>
-                    <div class="input-group">
-                        <label>Kd:</label>
-                        <input type="number" id="m2_p2_kd" step="0.01" value="0.03">
-                    </div>
-                </div>
-            </div>
-
-            <div class="button-group" style="margin-top: 10px;">
-                <button class="btn btn-warning" onclick="loadMotor2Params()">读取当前值</button>
-                <button class="btn btn-primary" onclick="setMotor2Params()">应用参数</button>
-            </div>
-        </div>
-
-        <div class="response" id="response"></div>
     </div>
 
     <script>
+        // 全局变量
+        let motor1ZeroOffset = 0;
+        let motor2ZeroOffset = 0;
+        const GEAR_RATIO = 6.33;
+
+        // 设置零点位置
+        function setZeroPosition() {
+            fetch('/api/get_motor_params')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        motor1ZeroOffset = data.motor1_pos;
+                        motor2ZeroOffset = data.motor2_pos;
+
+                        // 保存到localStorage
+                        localStorage.setItem('motor1_zero', motor1ZeroOffset);
+                        localStorage.setItem('motor2_zero', motor2ZeroOffset);
+
+                        document.getElementById('zero-status').style.display = 'block';
+                        document.getElementById('zero-error').style.display = 'none';
+                        setTimeout(() => {
+                            document.getElementById('zero-status').style.display = 'none';
+                        }, 3000);
+                    } else {
+                        document.getElementById('zero-error').textContent = '✗ ' + (data.message || '设置失败');
+                        document.getElementById('zero-error').style.display = 'block';
+                        document.getElementById('zero-status').style.display = 'none';
+                        setTimeout(() => {
+                            document.getElementById('zero-error').style.display = 'none';
+                        }, 5000);
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('zero-error').textContent = '✗ 网络错误';
+                    document.getElementById('zero-error').style.display = 'block';
+                    document.getElementById('zero-status').style.display = 'none';
+                    setTimeout(() => {
+                        document.getElementById('zero-error').style.display = 'none';
+                    }, 5000);
+                });
+        }
+
+        // 调整力矩
+        function adjustTorque(increase) {
+            const action = increase ? 'increase' : 'decrease';
+            fetch(`/api/adjust_torque?action=${action}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        document.getElementById('torque-value').textContent = data.torque.toFixed(1);
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // 调整Kd
+        function adjustKd(increase) {
+            const action = increase ? 'increase' : 'decrease';
+            fetch(`/api/adjust_kd?action=${action}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        document.getElementById('kd-value').textContent = data.kd.toFixed(2);
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // 更新电机位置显示
+        function updateMotorPositions() {
+            fetch('/api/get_motor_params')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        // 计算相对于零点的角度，并转换为度数
+                        const motor1Rad = data.motor1_pos - motor1ZeroOffset;
+                        const motor2Rad = data.motor2_pos - motor2ZeroOffset;
+
+                        // 弧度转角度，再除以减速比（内部位置/减速比=外部角度）
+                        const motor1Deg = (motor1Rad * 180 / Math.PI) / GEAR_RATIO;
+                        const motor2Deg = (motor2Rad * 180 / Math.PI) / GEAR_RATIO;
+
+                        document.getElementById('motor1-angle').textContent = motor1Deg.toFixed(1);
+                        document.getElementById('motor2-angle').textContent = motor2Deg.toFixed(1);
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // 初始化：加载当前参数
+        function loadCurrentParams() {
+            fetch('/api/get_current_params')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        document.getElementById('torque-value').textContent = data.torque.toFixed(1);
+                        document.getElementById('kd-value').textContent = data.kd.toFixed(2);
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
         // 页面加载时初始化
         window.onload = function() {
-            loadMotor1Params();
-            loadMotor2Params();
-            startStatePolling();
+            // 从localStorage加载零点位置
+            const savedMotor1Zero = localStorage.getItem('motor1_zero');
+            const savedMotor2Zero = localStorage.getItem('motor2_zero');
+            if (savedMotor1Zero !== null) {
+                motor1ZeroOffset = parseFloat(savedMotor1Zero);
+            }
+            if (savedMotor2Zero !== null) {
+                motor2ZeroOffset = parseFloat(savedMotor2Zero);
+            }
+
+            loadCurrentParams();
+            updateMotorPositions();
+            // 每100ms更新一次电机位置
+            setInterval(updateMotorPositions, 100);
         };
-
-        // 状态轮询
-        let statePollingInterval = null;
-        function startStatePolling() {
-            updateState(); // 立即更新一次
-            statePollingInterval = setInterval(updateState, 500); // 每500ms更新一次
-        }
-
-        function updateState() {
-            fetch('/api/state')
-                .then(response => response.json())
-                .then(data => {
-                    // 更新模式显示
-                    document.getElementById('mode-text').textContent = data.mode;
-
-                    // 更新阶段显示
-                    document.getElementById('m1-phase').textContent = data.m1_phase;
-                    document.getElementById('m2-phase').textContent = data.m2_phase;
-
-                    // 更新模式按钮激活状态
-                    const isAIMode = (data.mode === "AI模式");
-                    const isIMUMode = (data.mode === "IMU模式");
-                    const isProgramMode = (data.mode === "程序模式");
-
-                    const btnAI = document.getElementById('btn-ai-mode');
-                    const btnIMU = document.getElementById('btn-imu-mode');
-                    const btnProgram = document.getElementById('btn-program-mode');
-
-                    btnAI.classList.toggle('active', isAIMode);
-                    btnIMU.classList.toggle('active', isIMUMode);
-                    btnProgram.classList.toggle('active', isProgramMode);
-
-                    // 更新状态文本和样式
-                    const stateText = document.getElementById('state-text');
-                    stateText.textContent = data.state;
-
-                    // 根据状态ID设置不同样式
-                    stateText.className = 'status-badge';
-                    if (data.state_id === 0) {
-                        stateText.classList.add('badge-idle');
-                    } else if (data.state_id === 1 || data.state_id === 2) {
-                        stateText.classList.add('badge-waiting');
-                    } else if (data.state_id === 3 || data.state_id === 4) {
-                        stateText.classList.add('badge-working');
-                    } else if (data.state_id === 5 || data.state_id === 6) {
-                        stateText.classList.add('badge-phase');
-                    }
-
-                    // 更新活动电机
-                    document.getElementById('active-motor').textContent =
-                        data.active_motor > 0 ? data.active_motor + '号电机' : '无';
-
-                    // 更新抬腿电机
-                    document.getElementById('lifting-motor').textContent =
-                        data.lifting_motor > 0 ? data.lifting_motor + '号电机' : '无';
-
-                    // 更新助力值
-                    document.getElementById('torque-value').textContent = data.torque.toFixed(1);
-                })
-                .catch(error => {
-                    console.error('获取状态失败:', error);
-                });
-        }
-
-        function toggleSection(id) {
-            const section = document.getElementById(id);
-            section.classList.toggle('active');
-        }
-
-        function showResponse(message, type = 'info') {
-            const responseDiv = document.getElementById('response');
-            responseDiv.textContent = message;
-            responseDiv.className = 'response show ' + type;
-            setTimeout(() => {
-                responseDiv.classList.remove('show');
-            }, 3000);
-        }
-
-        function sendCommand(cmd) {
-            fetch('/api/command?cmd=' + cmd)
-                .then(response => response.json())
-                .then(data => {
-                    showResponse('命令执行成功: ' + cmd, 'success');
-                    // 命令执行后立即更新状态
-                    setTimeout(updateState, 100);
-                })
-                .catch(error => {
-                    showResponse('命令执行失败: ' + error, 'error');
-                });
-        }
-
-        function setThreshold() {
-            const threshold = document.getElementById('threshold').value;
-            fetch('/api/params?threshold=' + threshold)
-                .then(response => response.json())
-                .then(data => {
-                    showResponse('阈值已设置: ' + threshold, 'success');
-                })
-                .catch(error => {
-                    showResponse('设置失败: ' + error, 'error');
-                });
-        }
-
-        function loadMotor1Params() {
-            fetch('/api/get_motor_params?motor=1')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('m1_trigger_speed').value = data.trigger_speed;
-                    document.getElementById('m1_phase1_duration').value = data.phase1_duration;
-                    document.getElementById('m1_phase2_duration').value = data.phase2_duration;
-                    document.getElementById('m1_waiting_duration').value = data.waiting_duration;
-                    document.getElementById('m1_idle_duration').value = data.idle_duration;
-                    document.getElementById('m1_p1_vel').value = data.p1_vel;
-                    document.getElementById('m1_p1_torque').value = data.p1_torque;
-                    document.getElementById('m1_p1_kp').value = data.p1_kp;
-                    document.getElementById('m1_p1_kd').value = data.p1_kd;
-                    document.getElementById('m1_p2_vel').value = data.p2_vel;
-                    document.getElementById('m1_p2_torque').value = data.p2_torque;
-                    document.getElementById('m1_p2_kp').value = data.p2_kp;
-                    document.getElementById('m1_p2_kd').value = data.p2_kd;
-                })
-                .catch(error => {
-                    console.error('读取电机1参数失败:', error);
-                });
-        }
-
-        function loadMotor2Params() {
-            fetch('/api/get_motor_params?motor=2')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('m2_trigger_speed').value = data.trigger_speed;
-                    document.getElementById('m2_phase1_duration').value = data.phase1_duration;
-                    document.getElementById('m2_phase2_duration').value = data.phase2_duration;
-                    document.getElementById('m2_waiting_duration').value = data.waiting_duration;
-                    document.getElementById('m2_idle_duration').value = data.idle_duration;
-                    document.getElementById('m2_p1_vel').value = data.p1_vel;
-                    document.getElementById('m2_p1_torque').value = data.p1_torque;
-                    document.getElementById('m2_p1_kp').value = data.p1_kp;
-                    document.getElementById('m2_p1_kd').value = data.p1_kd;
-                    document.getElementById('m2_p2_vel').value = data.p2_vel;
-                    document.getElementById('m2_p2_torque').value = data.p2_torque;
-                    document.getElementById('m2_p2_kp').value = data.p2_kp;
-                    document.getElementById('m2_p2_kd').value = data.p2_kd;
-                })
-                .catch(error => {
-                    console.error('读取电机2参数失败:', error);
-                });
-        }
-
-        function setMotor1Params() {
-            const params = {
-                motor: 1,
-                trigger_speed: document.getElementById('m1_trigger_speed').value,
-                phase1_duration: document.getElementById('m1_phase1_duration').value,
-                phase2_duration: document.getElementById('m1_phase2_duration').value,
-                waiting_duration: document.getElementById('m1_waiting_duration').value,
-                idle_duration: document.getElementById('m1_idle_duration').value,
-                p1_vel: document.getElementById('m1_p1_vel').value,
-                p1_torque: document.getElementById('m1_p1_torque').value,
-                p1_kp: document.getElementById('m1_p1_kp').value,
-                p1_kd: document.getElementById('m1_p1_kd').value,
-                p2_vel: document.getElementById('m1_p2_vel').value,
-                p2_torque: document.getElementById('m1_p2_torque').value,
-                p2_kp: document.getElementById('m1_p2_kp').value,
-                p2_kd: document.getElementById('m1_p2_kd').value
-            };
-
-            const query = Object.keys(params).map(k => k + '=' + params[k]).join('&');
-            fetch('/api/motor_params?' + query)
-                .then(response => response.json())
-                .then(data => {
-                    showResponse('电机1参数已更新', 'success');
-                })
-                .catch(error => {
-                    showResponse('设置失败: ' + error, 'error');
-                });
-        }
-
-        function setMotor2Params() {
-            const params = {
-                motor: 2,
-                trigger_speed: document.getElementById('m2_trigger_speed').value,
-                phase1_duration: document.getElementById('m2_phase1_duration').value,
-                phase2_duration: document.getElementById('m2_phase2_duration').value,
-                waiting_duration: document.getElementById('m2_waiting_duration').value,
-                idle_duration: document.getElementById('m2_idle_duration').value,
-                p1_vel: document.getElementById('m2_p1_vel').value,
-                p1_torque: document.getElementById('m2_p1_torque').value,
-                p1_kp: document.getElementById('m2_p1_kp').value,
-                p1_kd: document.getElementById('m2_p1_kd').value,
-                p2_vel: document.getElementById('m2_p2_vel').value,
-                p2_torque: document.getElementById('m2_p2_torque').value,
-                p2_kp: document.getElementById('m2_p2_kp').value,
-                p2_kd: document.getElementById('m2_p2_kd').value
-            };
-
-            const query = Object.keys(params).map(k => k + '=' + params[k]).join('&');
-            fetch('/api/motor_params?' + query)
-                .then(response => response.json())
-                .then(data => {
-                    showResponse('电机2参数已更新', 'success');
-                })
-                .catch(error => {
-                    showResponse('设置失败: ' + error, 'error');
-                });
-        }
     </script>
 </body>
 </html>
 )rawliteral";
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif // WEBPAGE_H

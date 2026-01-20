@@ -7,9 +7,11 @@ extern "C" {
 
 #include "esp_err.h"
 #include "esp_http_server.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 /* WiFi AP 和 Web服务器配置 */
-#define WIFI_AP_SSID            "ESP32_AP"
+#define WIFI_AP_SSID            "登山外骨骼2"
 #define WIFI_AP_PASSWORD        "12345678"
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
@@ -39,11 +41,14 @@ httpd_handle_t start_webserver(void);
 void stop_webserver(httpd_handle_t server);
 
 /**
- * @brief 获取系统运行时间（秒）
- *
- * @return uint32_t 运行时间
+ * @brief 设置外部电机参数和互斥锁的访问接口
+ * @param motor1_pos 电机1位置指针
+ * @param motor2_pos 电机2位置指针
+ * @param mutex 互斥锁句柄
+ * @param speed_follow_ptr SpeedFollowMode实例指针
  */
-uint32_t get_system_uptime(void);
+void webserver_set_motor_access(float* motor1_pos, float* motor2_pos,
+                                 SemaphoreHandle_t mutex, void* speed_follow_ptr);
 
 #ifdef __cplusplus
 }

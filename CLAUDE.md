@@ -22,10 +22,6 @@ ESP_LOGI(TAG, "注册成功");
 // 正确 - 已注释
 // ESP_LOGI(TAG, "注册成功");  // 运行时日志已禁用
 
-// 正确 - 条件编译
-#if !SERIAL_PASSTHROUGH_ENABLE
-ESP_LOGI(TAG, "调试信息");
-#endif
 ```
 
 ## 开发环境

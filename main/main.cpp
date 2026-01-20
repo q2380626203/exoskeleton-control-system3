@@ -21,6 +21,14 @@
 #include "voice_module.h"
 #include "button_detector.h"
 #include "tcp_data_upload.h"
+#include "motor_config.h"
+
+// Web服务器句柄
+static httpd_handle_t webserver = NULL;
+
+// ==================== 设备配置 ====================
+#define DEVICE_ID              2               // 设备编号: 1, 2, 3...
+
 
 // ==================== 硬件配置 ====================
 // 电机驱动 (UART2 + RS485)
@@ -44,14 +52,10 @@
 
 // 按键
 #define BUTTON_ASSIST_UP_PIN      GPIO_NUM_3    // 助力增加按键
-#define BUTTON_POWER_SWITCH_PIN   GPIO_NUM_4    // 电源开关
 #define BUTTON_ASSIST_DOWN_PIN    GPIO_NUM_5    // 助力减少按键
 
 // ==================== 功能开关 ====================
 // 4G模块TCP透传功能在 tcp_data_upload.h 中定义
-
-// ==================== 设备配置 ====================
-#define DEVICE_ID              1               // 设备编号: 1, 2, 3...
 
 // ==================== 全局实例 ====================
 VoiceModule voice_module{};
@@ -74,6 +78,10 @@ struct MotorParams {
 
 static MotorParams global_motor_1 = {MOTOR_ID_1, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 static MotorParams global_motor_2 = {MOTOR_ID_2, 1, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+// ==================== 电机反馈数据（用于Web显示） ====================
+static float global_motor1_feedback_pos = 0.0f;
+static float global_motor2_feedback_pos = 0.0f;
 
 /**
  * @brief 电机控制任务
@@ -136,6 +144,8 @@ void motor_control_task(void *pvParameters) {
         if (err1 == ESP_OK) {
             uint32_t timestamp = esp_timer_get_time() / 1000;
             position_buffer_add_motor1(&position_buffers, motor_data_1.pos, timestamp);
+            // 更新全局反馈位置（用于Web显示）
+            global_motor1_feedback_pos = motor_data_1.pos;
         }
 
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -154,6 +164,8 @@ void motor_control_task(void *pvParameters) {
         if (err2 == ESP_OK) {
             uint32_t timestamp = esp_timer_get_time() / 1000;
             position_buffer_add_motor2(&position_buffers, motor_data_2.pos, timestamp);
+            // 更新全局反馈位置（用于Web显示）
+            global_motor2_feedback_pos = motor_data_2.pos;
         }
 
         // 波形分析与速度跟随
@@ -255,8 +267,18 @@ extern "C" void app_main() {
         return;
     }
 
+    // 初始化WiFi热点
+    wifi_init_softap();
+
+    // 设置Web服务器的电机参数访问接口
+    webserver_set_motor_access(&global_motor1_feedback_pos, &global_motor2_feedback_pos,
+                                motor_params_mutex, &speed_follow);
+
+    // 启动Web服务器
+    webserver = start_webserver();
+
     // 初始化按键检测
-    button_detector_init(BUTTON_ASSIST_UP_PIN, BUTTON_POWER_SWITCH_PIN, BUTTON_ASSIST_DOWN_PIN);
+    button_detector_init(BUTTON_ASSIST_UP_PIN, BUTTON_ASSIST_DOWN_PIN);
 
     // 创建任务
     xTaskCreate(button_detector_task, "button_task", 4096, NULL, 4, NULL);

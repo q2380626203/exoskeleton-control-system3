@@ -4,7 +4,7 @@
 #include <string.h>
 #include <algorithm>
 
-static const char *TAG_MOTOR = "UnitreeMotorDriver";
+// static const char *TAG_MOTOR = "UnitreeMotorDriver";
 
 // ==================== 静态函数区域 (内部使用) ====================
 
