@@ -1,6 +1,7 @@
 #include "wifi_webserver.h"
 #include "webpage.h"
 #include "speed_follow_wrapper.h"
+#include "tcp_data_upload.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -14,6 +15,8 @@
 #include "lwip/ip4_addr.h"
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
 
 // static const char *TAG = "WIFI_WEBSERVER";  // 运行时日志已禁用，TAG未使用
 
@@ -265,6 +268,39 @@ static esp_err_t adjust_kd_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* HTTP GET处理函数 - 获取服务器时间API */
+static esp_err_t get_server_time_handler(httpd_req_t *req)
+{
+    char response[256];
+
+    // 检查时间是否已同步
+    bool synced = is_time_synced();
+
+    if (synced) {
+        // 获取当前时间
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        // 转换为北京时间
+        struct tm timeinfo;
+        localtime_r(&tv.tv_sec, &timeinfo);
+
+        // 格式化时间字符串: YYYY-MM-DD HH:MM:SS
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
+
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"synced\":true,\"time\":\"%s\"}", time_str);
+    } else {
+        snprintf(response, sizeof(response),
+                 "{\"status\":\"ok\",\"synced\":false,\"time\":\"服务器未连接\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, response);
+    return ESP_OK;
+}
+
 
 
 /* URI处理器配置 */
@@ -303,6 +339,13 @@ static const httpd_uri_t api_adjust_kd = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t api_get_server_time = {
+    .uri       = "/api/get_server_time",
+    .method    = HTTP_GET,
+    .handler   = get_server_time_handler,
+    .user_ctx  = NULL
+};
+
 
 httpd_handle_t start_webserver(void)
 {
@@ -322,6 +365,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &api_get_current_params);
         httpd_register_uri_handler(server, &api_adjust_torque);
         httpd_register_uri_handler(server, &api_adjust_kd);
+        httpd_register_uri_handler(server, &api_get_server_time);
 
         // ESP_LOGI(TAG, "Web服务器启动成功");  // 运行时日志已禁用
         return server;

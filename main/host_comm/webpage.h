@@ -34,6 +34,15 @@ static const char webpage_html[] = R"rawliteral(
             margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
+        .server-time {
+            font-size: 1.2em;
+            color: #ffffff;
+            margin-top: 10px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+        .server-time.disconnected {
+            color: #ffcccc;
+        }
         .card {
             background: white;
             border-radius: 15px;
@@ -145,6 +154,7 @@ static const char webpage_html[] = R"rawliteral(
     <div class="container">
         <div class="header">
             <h1>🦾 登山外骨骼</h1>
+            <div class="server-time" id="server-time">正在获取时间...</div>
         </div>
 
         <!-- 电机位置显示 -->
@@ -305,6 +315,28 @@ static const char webpage_html[] = R"rawliteral(
                 .catch(error => console.error('Error:', error));
         }
 
+        // 更新服务器时间显示
+        function updateServerTime() {
+            fetch('/api/get_server_time')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        const timeElement = document.getElementById('server-time');
+                        if (data.synced) {
+                            timeElement.textContent = data.time;
+                            timeElement.classList.remove('disconnected');
+                        } else {
+                            timeElement.textContent = data.time;
+                            timeElement.classList.add('disconnected');
+                        }
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('server-time').textContent = '服务器未连接';
+                    document.getElementById('server-time').classList.add('disconnected');
+                });
+        }
+
         // 页面加载时初始化
         window.onload = function() {
             // 从localStorage加载零点位置
@@ -319,8 +351,11 @@ static const char webpage_html[] = R"rawliteral(
 
             loadCurrentParams();
             updateMotorPositions();
+            updateServerTime();
             // 每100ms更新一次电机位置
             setInterval(updateMotorPositions, 100);
+            // 每1秒更新一次服务器时间
+            setInterval(updateServerTime, 1000);
         };
     </script>
 </body>

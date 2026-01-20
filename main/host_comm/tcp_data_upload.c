@@ -18,8 +18,8 @@
 
 // static const char *TAG = "TCP_UPLOAD";  // 运行时日志已禁用，TAG未使用
 
-/* 设备ID配置（原来从网络配置获取） */
-static uint8_t s_device_id = 1;  // 默认设备ID为1
+/* 设备ID配置（由main.cpp通过tcp_data_set_device_id()设置） */
+static uint8_t s_device_id = 1;  // 默认设备ID为1，启动后会被main.cpp中的DEVICE_ID宏覆盖
 
 /* 串口透传状态 */
 static bool s_serial_initialized = false;
@@ -179,6 +179,14 @@ static volatile uint8_t s_sample_interval_ms = 5;
 void tcp_data_set_interval(uint8_t interval_ms)
 {
     s_sample_interval_ms = interval_ms;
+}
+
+/**
+ * @brief 设置设备ID（供main.cpp调用）
+ */
+void tcp_data_set_device_id(uint8_t device_id)
+{
+    s_device_id = device_id;
 }
 
 /* 填充发送数据包（公网和局域网共用） - 协议v10: 每条数据带真实时间偏移 */

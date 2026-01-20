@@ -27,7 +27,7 @@
 static httpd_handle_t webserver = NULL;
 
 // ==================== 设备配置 ====================
-#define DEVICE_ID              2               // 设备编号: 1, 2, 3...
+#define DEVICE_ID              0               // 需要根据具体设备修改id以及wifi_webserver.h中wifi名称-----0号为调试
 
 
 // ==================== 硬件配置 ====================
@@ -236,6 +236,9 @@ extern "C" void app_main() {
     if (motor_params_mutex == NULL) {
         return;
     }
+
+    // 设置TCP上传的设备ID
+    tcp_data_set_device_id(DEVICE_ID);
 
     // 后台初始化4G模块TCP透传
     serial_4g_tcp_init_background();

@@ -179,6 +179,12 @@ bool is_time_synced(void);
 esp_err_t tcp_data_upload_init(void);
 
 /**
+ * @brief 设置设备ID（供main.cpp调用）
+ * @param device_id 设备ID (1-255)
+ */
+void tcp_data_set_device_id(uint8_t device_id);
+
+/**
  * @brief 设置采样间隔（供main.cpp调用）
  * @param interval_ms 采样间隔（毫秒）
  */
