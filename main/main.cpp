@@ -59,7 +59,7 @@
 #define WIFI_STA_PASSWORD       "12345678"
 
 // TCP服务器配置
-#define DEVICE_ID              3               // 设备编号: 1, 2, 3...
+#define DEVICE_ID              1               // 设备编号: 1, 2, 3...
 #define TCP_SERVER_HOST         "8.137.35.154"  // 云服务器地址
 #define TCP_SERVER_PORT         16385           // 云服务器端口
 #define TCP_LAN_SERVER_PORT     8888            // 局域网服务器端口

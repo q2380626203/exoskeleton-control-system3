@@ -10,12 +10,18 @@ static const char *TAG = "BUTTON_DETECTOR";
 
 // 助力调整步长
 #define TORQUE_STEP 0.1f
-// 电机1 Phase1 力矩范围：0 ~ 1.7
-#define MOTOR1_TORQUE_MIN 0.0f
-#define MOTOR1_TORQUE_MAX 1.7f
-// 电机2 Phase1 力矩范围：-1.7 ~ 0
-#define MOTOR2_TORQUE_MIN -1.7f
-#define MOTOR2_TORQUE_MAX 0.0f
+// 电机1 Phase1 力矩范围：0 ~ 2.5
+#define MOTOR1_PHASE1_MIN 0.0f
+#define MOTOR1_PHASE1_MAX 2.5f
+// 电机1 Phase2 力矩范围：-2.5 ~ 0
+#define MOTOR1_PHASE2_MIN -2.5f
+#define MOTOR1_PHASE2_MAX 0.0f
+// 电机2 Phase1 力矩范围：-2.5 ~ 0
+#define MOTOR2_PHASE1_MIN -2.5f
+#define MOTOR2_PHASE1_MAX 0.0f
+// 电机2 Phase2 力矩范围：0 ~ 2.5
+#define MOTOR2_PHASE2_MIN 0.0f
+#define MOTOR2_PHASE2_MAX 2.5f
 
 
 // ============================================================================
@@ -220,42 +226,47 @@ static void switch_detector_update(SwitchDetector* detector) {
 
 /**
  * @brief 将浮点数转换为中文数字字符串
- * @param value 浮点数值（范围 0.0 ~ 2.0）
+ * @param value 浮点数值（范围 0.0 ~ 2.5）
  * @return 中文数字字符串
  * @note 将浮点数乘以10后转换为整数，然后转换为对应的中文数字
- *       例如：0.6 -> "六", 0.7 -> "七", 1.5 -> "十五", 2.0 -> "二十"
+ *       例如：0.6 -> "六", 0.7 -> "七", 1.5 -> "十五", 2.0 -> "二十", 2.5 -> "二十五"
  */
 static const char* float_to_chinese_number(float value) {
     // 将浮点数乘以10并四舍五入转换为整数
     int num = (int)(value * 10 + 0.5f);
 
-    // 限制范围在 0-20
+    // 限制范围在 0-25
     if (num < 0) num = 0;
-    if (num > 20) num = 20;
+    if (num > 25) num = 25;
 
     // 中文数字映射表
     static const char* chinese_numbers[] = {
-        "零",   // 0
-        "一",   // 1
-        "二",   // 2
-        "三",   // 3
-        "四",   // 4
-        "五",   // 5
-        "六",   // 6
-        "七",   // 7
-        "八",   // 8
-        "九",   // 9
-        "十",   // 10
-        "十一", // 11
-        "十二", // 12
-        "十三", // 13
-        "十四", // 14
-        "十五", // 15
-        "十六", // 16
-        "十七", // 17
-        "十八", // 18
-        "十九", // 19
-        "二十"  // 20
+        "零",     // 0
+        "一",     // 1
+        "二",     // 2
+        "三",     // 3
+        "四",     // 4
+        "五",     // 5
+        "六",     // 6
+        "七",     // 7
+        "八",     // 8
+        "九",     // 9
+        "十",     // 10
+        "十一",   // 11
+        "十二",   // 12
+        "十三",   // 13
+        "十四",   // 14
+        "十五",   // 15
+        "十六",   // 16
+        "十七",   // 17
+        "十八",   // 18
+        "十九",   // 19
+        "二十",   // 20
+        "二十一", // 21
+        "二十二", // 22
+        "二十三", // 23
+        "二十四", // 24
+        "二十五"  // 25
     };
 
     return chinese_numbers[num];
@@ -264,96 +275,122 @@ static const char* float_to_chinese_number(float value) {
 /**
  * @brief 助力增加按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
- * @note 单击：增加电机1和电机2的Phase1力矩绝对值
- *       双击：切换到AI模式并启动
+ * @note 单击：增加电机1和电机2的Phase1和Phase2力矩绝对值
+ *       双击：切换到AI模式并启动（已禁用）
  */
 static void default_assist_up_callback(gpio_num_t pin) {
-    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    // uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-    // 检测双击
-    if ((current_time - assist_up_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
-        // 双击：切换到AI模式并启动
-        speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
-        speed_follow.startAIRunning();
-        voice_speak(&voice_module, "自动模式");
-        assist_up_last_press_time = 0;  // 重置，避免连续触发
-        return;
-    }
-    assist_up_last_press_time = current_time;
+    // // 检测双击（已禁用）
+    // if ((current_time - assist_up_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
+    //     // 双击：切换到AI模式并启动
+    //     speed_follow.setModeType(SPEED_FOLLOW_MODE_AI);
+    //     speed_follow.startAIRunning();
+    //     voice_speak(&voice_module, "自动模式");
+    //     assist_up_last_press_time = 0;  // 重置，避免连续触发
+    //     return;
+    // }
+    // assist_up_last_press_time = current_time;
 
-    // 单击：增加助力
+    // 单击：增加助力 - 同时调整phase1和phase2
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
 
-    // 增加电机1的Phase1力矩（范围：0 ~ 1.7）
-    float new_torque1 = motor1_config->phase1.torque + TORQUE_STEP;
-    if (new_torque1 > MOTOR1_TORQUE_MAX) {
-        new_torque1 = MOTOR1_TORQUE_MAX;
+    // 增加电机1的Phase1力矩（范围：0 ~ 2.5）
+    float new_torque1_phase1 = motor1_config->phase1.torque + TORQUE_STEP;
+    if (new_torque1_phase1 > MOTOR1_PHASE1_MAX) {
+        new_torque1_phase1 = MOTOR1_PHASE1_MAX;
     }
-    motor1_config->phase1.torque = new_torque1;
+    motor1_config->phase1.torque = new_torque1_phase1;
 
-    // 增加电机2的Phase1力矩**绝对值**（范围：-1.7 ~ 0，负号是方向，增加助力意味着更大的负值）
-    float new_torque2 = motor2_config->phase1.torque - TORQUE_STEP;  // 减去0.1使其更负
-    if (new_torque2 < MOTOR2_TORQUE_MIN) {
-        new_torque2 = MOTOR2_TORQUE_MIN;
+    // 增加电机1的Phase2力矩绝对值（范围：-2.5 ~ 0）
+    float new_torque1_phase2 = motor1_config->phase2.torque - TORQUE_STEP;
+    if (new_torque1_phase2 < MOTOR1_PHASE2_MIN) {
+        new_torque1_phase2 = MOTOR1_PHASE2_MIN;
     }
-    motor2_config->phase1.torque = new_torque2;
+    motor1_config->phase2.torque = new_torque1_phase2;
 
+    // 增加电机2的Phase1力矩绝对值（范围：-2.5 ~ 0）
+    float new_torque2_phase1 = motor2_config->phase1.torque - TORQUE_STEP;
+    if (new_torque2_phase1 < MOTOR2_PHASE1_MIN) {
+        new_torque2_phase1 = MOTOR2_PHASE1_MIN;
+    }
+    motor2_config->phase1.torque = new_torque2_phase1;
 
-    // ESP_LOGI(TAG, "助力增加 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
-    //          new_torque1, new_torque2, motor1_config->trigger_speed);
+    // 增加电机2的Phase2力矩绝对值（范围：0 ~ 2.5）
+    float new_torque2_phase2 = motor2_config->phase2.torque + TORQUE_STEP;
+    if (new_torque2_phase2 > MOTOR2_PHASE2_MAX) {
+        new_torque2_phase2 = MOTOR2_PHASE2_MAX;
+    }
+    motor2_config->phase2.torque = new_torque2_phase2;
+
+    // ESP_LOGI(TAG, "助力增加 - M1_P1: %.2f, M1_P2: %.2f, M2_P1: %.2f, M2_P2: %.2f",
+    //          new_torque1_phase1, new_torque1_phase2, new_torque2_phase1, new_torque2_phase2);
 
     // 播放电机1的力矩绝对值（中文数字）
-    const char* torque_text = float_to_chinese_number(new_torque1);
+    const char* torque_text = float_to_chinese_number(new_torque1_phase1);
     voice_speak(&voice_module, torque_text);
 }
 
 /**
  * @brief 助力减少按键回调的默认实现
  * @param pin 触发的GPIO引脚编号
- * @note 单击：减少电机1和电机2的Phase1力矩绝对值
- *       双击：切换到程序模式并停止AI运行
+ * @note 单击：减少电机1和电机2的Phase1和Phase2力矩绝对值
+ *       双击：切换到程序模式并停止AI运行（已禁用）
  */
 static void default_assist_down_callback(gpio_num_t pin) {
-    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    // uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-    // 检测双击
-    if ((current_time - assist_down_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
-        // 双击：切换到程序模式
-        speed_follow.stopAIRunning();
-        speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
-        voice_speak(&voice_module, "手动模式");
-        assist_down_last_press_time = 0;  // 重置，避免连续触发
-        return;
-    }
-    assist_down_last_press_time = current_time;
+    // // 检测双击（已禁用）
+    // if ((current_time - assist_down_last_press_time) < DOUBLE_CLICK_INTERVAL_MS) {
+    //     // 双击：切换到程序模式
+    //     speed_follow.stopAIRunning();
+    //     speed_follow.setModeType(SPEED_FOLLOW_MODE_PROGRAM);
+    //     voice_speak(&voice_module, "手动模式");
+    //     assist_down_last_press_time = 0;  // 重置，避免连续触发
+    //     return;
+    // }
+    // assist_down_last_press_time = current_time;
 
-    // 单击：减少助力
+    // 单击：减少助力 - 同时调整phase1和phase2
     // 获取电机1和电机2的配置
     speed_follow_config_t* motor1_config = speed_follow.getMotorConfig(1);
     speed_follow_config_t* motor2_config = speed_follow.getMotorConfig(2);
 
-    // 减少电机1的Phase1力矩（范围：0 ~ 1.7）
-    float new_torque1 = motor1_config->phase1.torque - TORQUE_STEP;
-    if (new_torque1 < MOTOR1_TORQUE_MIN) {
-        new_torque1 = MOTOR1_TORQUE_MIN;
+    // 减少电机1的Phase1力矩（范围：0 ~ 2.5）
+    float new_torque1_phase1 = motor1_config->phase1.torque - TORQUE_STEP;
+    if (new_torque1_phase1 < MOTOR1_PHASE1_MIN) {
+        new_torque1_phase1 = MOTOR1_PHASE1_MIN;
     }
-    motor1_config->phase1.torque = new_torque1;
+    motor1_config->phase1.torque = new_torque1_phase1;
 
-    // 减少电机2的Phase1力矩**绝对值**（范围：-1.7 ~ 0，负号是方向，减少助力意味着更小的负值）
-    float new_torque2 = motor2_config->phase1.torque + TORQUE_STEP;  // 加上0.1使其更接近0
-    if (new_torque2 > MOTOR2_TORQUE_MAX) {
-        new_torque2 = MOTOR2_TORQUE_MAX;
+    // 减少电机1的Phase2力矩绝对值（范围：-2.5 ~ 0）
+    float new_torque1_phase2 = motor1_config->phase2.torque + TORQUE_STEP;
+    if (new_torque1_phase2 > MOTOR1_PHASE2_MAX) {
+        new_torque1_phase2 = MOTOR1_PHASE2_MAX;
     }
-    motor2_config->phase1.torque = new_torque2;
+    motor1_config->phase2.torque = new_torque1_phase2;
 
+    // 减少电机2的Phase1力矩绝对值（范围：-2.5 ~ 0）
+    float new_torque2_phase1 = motor2_config->phase1.torque + TORQUE_STEP;
+    if (new_torque2_phase1 > MOTOR2_PHASE1_MAX) {
+        new_torque2_phase1 = MOTOR2_PHASE1_MAX;
+    }
+    motor2_config->phase1.torque = new_torque2_phase1;
 
-    // ESP_LOGI(TAG, "助力减少 - 电机1: %.2f, 电机2: %.2f, 触发速度: %.1f",
-    //          new_torque1, new_torque2, motor1_config->trigger_speed);
+    // 减少电机2的Phase2力矩绝对值（范围：0 ~ 2.5）
+    float new_torque2_phase2 = motor2_config->phase2.torque - TORQUE_STEP;
+    if (new_torque2_phase2 < MOTOR2_PHASE2_MIN) {
+        new_torque2_phase2 = MOTOR2_PHASE2_MIN;
+    }
+    motor2_config->phase2.torque = new_torque2_phase2;
+
+    // ESP_LOGI(TAG, "助力减少 - M1_P1: %.2f, M1_P2: %.2f, M2_P1: %.2f, M2_P2: %.2f",
+    //          new_torque1_phase1, new_torque1_phase2, new_torque2_phase1, new_torque2_phase2);
 
     // 播放电机1的力矩绝对值（中文数字）
-    const char* torque_text = float_to_chinese_number(new_torque1);
+    const char* torque_text = float_to_chinese_number(new_torque1_phase1);
     voice_speak(&voice_module, torque_text);
 }
 
