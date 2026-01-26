@@ -29,8 +29,6 @@ typedef enum {
 // 速度跟随模式配置
 typedef struct {
     float trigger_speed;    // 触发速度阈值
-    uint32_t waiting_duration_ms; // 等待状态持续时间
-    uint32_t idle_duration_ms;    // 空闲状态持续时间
 
     // 第一阶段参数 (mode, pos, vel, torque, kp, kd)
     // vel: 用于指示正确的速度方向（正/负），实际速度由实时反馈动态计算
@@ -226,7 +224,9 @@ private:
     float _threshold_value;         // 触发阈值（默认10.0）
     bool _first_trigger_detected;   // 是否已检测到首次触发
     uint8_t _triggered_channel;     // 触发的通道（6或7）
-    uint32_t _waiting_start_time;   // 等待开始时间
+    uint8_t _waiting_data_count;    // 等待状态下已接收的数据点计数
+    uint8_t _idle_data_count;       // 空闲状态下已接收的数据点计数
+    uint8_t _working_data_count;    // 工作状态下已接收的数据点计数
 
     // 速度捕获和动态参数
     float _captured_velocity;       // 捕获的触发速度值
