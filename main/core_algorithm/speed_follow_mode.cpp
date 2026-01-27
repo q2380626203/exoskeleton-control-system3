@@ -107,7 +107,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase1.mode = 1;
     _config_motor1.phase1.pos = 0.0f;
     _config_motor1.phase1.vel = 10.0f;      // 方向参考：正
-    _config_motor1.phase1.torque = 1.5f;
+    _config_motor1.phase1.torque = 1.0f;
     _config_motor1.phase1.kp = 0.0f;
     _config_motor1.phase1.kd = 0.08f;
 
@@ -116,7 +116,7 @@ void SpeedFollowMode::init() {
     _config_motor1.phase2.mode = 1;
     _config_motor1.phase2.pos = 0.0f;
     _config_motor1.phase2.vel = -10.0f;     // 方向参考：负
-    _config_motor1.phase2.torque = -1.5f;
+    _config_motor1.phase2.torque = -0.6f;
     _config_motor1.phase2.kp = 0.0f;
     _config_motor1.phase2.kd = 0.08f;
 
@@ -144,7 +144,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase1.mode = 1;
     _config_motor2.phase1.pos = 0.0f;
     _config_motor2.phase1.vel = -10.0f;     // 方向参考：负
-    _config_motor2.phase1.torque = -1.5f;
+    _config_motor2.phase1.torque = -1.0f;
     _config_motor2.phase1.kp = 0.0f;
     _config_motor2.phase1.kd = 0.08f;
 
@@ -153,7 +153,7 @@ void SpeedFollowMode::init() {
     _config_motor2.phase2.mode = 1;
     _config_motor2.phase2.pos = 0.0f;
     _config_motor2.phase2.vel = 10.0f;      // 方向参考：正
-    _config_motor2.phase2.torque = 1.5f;
+    _config_motor2.phase2.torque = 0.6f;
     _config_motor2.phase2.kp = 0.0f;
     _config_motor2.phase2.kd = 0.08f;
 
@@ -976,18 +976,12 @@ void SpeedFollowMode::stopAIRunning() {
  */
 float SpeedFollowMode::adjustTorque(bool increase) {
     if (increase) {
-        // 增加助力 - phase1和phase2同时调整绝对值
+        // 增加抬腿力矩 - 只调整phase1
         float new_torque1_phase1 = _config_motor1.phase1.torque + TORQUE_STEP;
         if (new_torque1_phase1 > MOTOR1_PHASE1_MAX) {
             new_torque1_phase1 = MOTOR1_PHASE1_MAX;
         }
         _config_motor1.phase1.torque = new_torque1_phase1;
-
-        float new_torque1_phase2 = _config_motor1.phase2.torque - TORQUE_STEP;
-        if (new_torque1_phase2 < MOTOR1_PHASE2_MIN) {
-            new_torque1_phase2 = MOTOR1_PHASE2_MIN;
-        }
-        _config_motor1.phase2.torque = new_torque1_phase2;
 
         float new_torque2_phase1 = _config_motor2.phase1.torque - TORQUE_STEP;
         if (new_torque2_phase1 < MOTOR2_PHASE1_MIN) {
@@ -995,28 +989,16 @@ float SpeedFollowMode::adjustTorque(bool increase) {
         }
         _config_motor2.phase1.torque = new_torque2_phase1;
 
-        float new_torque2_phase2 = _config_motor2.phase2.torque + TORQUE_STEP;
-        if (new_torque2_phase2 > MOTOR2_PHASE2_MAX) {
-            new_torque2_phase2 = MOTOR2_PHASE2_MAX;
-        }
-        _config_motor2.phase2.torque = new_torque2_phase2;
-
-        // ESP_LOGI(TAG, "[WEB] 助力增加 - M1_P1: %.2f, M1_P2: %.2f, M2_P1: %.2f, M2_P2: %.2f",
-        //          new_torque1_phase1, new_torque1_phase2, new_torque2_phase1, new_torque2_phase2);  // 运行时日志已禁用
+        // ESP_LOGI(TAG, "[WEB] 抬腿力矩增加 - M1_P1: %.2f, M2_P1: %.2f",
+        //          new_torque1_phase1, new_torque2_phase1);  // 运行时日志已禁用
         return new_torque1_phase1;
     } else {
-        // 减少助力 - phase1和phase2同时调整绝对值
+        // 减少抬腿力矩 - 只调整phase1
         float new_torque1_phase1 = _config_motor1.phase1.torque - TORQUE_STEP;
         if (new_torque1_phase1 < MOTOR1_PHASE1_MIN) {
             new_torque1_phase1 = MOTOR1_PHASE1_MIN;
         }
         _config_motor1.phase1.torque = new_torque1_phase1;
-
-        float new_torque1_phase2 = _config_motor1.phase2.torque + TORQUE_STEP;
-        if (new_torque1_phase2 > MOTOR1_PHASE2_MAX) {
-            new_torque1_phase2 = MOTOR1_PHASE2_MAX;
-        }
-        _config_motor1.phase2.torque = new_torque1_phase2;
 
         float new_torque2_phase1 = _config_motor2.phase1.torque + TORQUE_STEP;
         if (new_torque2_phase1 > MOTOR2_PHASE1_MAX) {
@@ -1024,14 +1006,8 @@ float SpeedFollowMode::adjustTorque(bool increase) {
         }
         _config_motor2.phase1.torque = new_torque2_phase1;
 
-        float new_torque2_phase2 = _config_motor2.phase2.torque - TORQUE_STEP;
-        if (new_torque2_phase2 < MOTOR2_PHASE2_MIN) {
-            new_torque2_phase2 = MOTOR2_PHASE2_MIN;
-        }
-        _config_motor2.phase2.torque = new_torque2_phase2;
-
-        // ESP_LOGI(TAG, "[WEB] 助力减少 - M1_P1: %.2f, M1_P2: %.2f, M2_P1: %.2f, M2_P2: %.2f",
-        //          new_torque1_phase1, new_torque1_phase2, new_torque2_phase1, new_torque2_phase2);  // 运行时日志已禁用
+        // ESP_LOGI(TAG, "[WEB] 抬腿力矩减少 - M1_P1: %.2f, M2_P1: %.2f",
+        //          new_torque1_phase1, new_torque2_phase1);  // 运行时日志已禁用
         return new_torque1_phase1;
     }
 }
@@ -1069,6 +1045,51 @@ float SpeedFollowMode::adjustKd(bool increase) {
         _config_motor2.phase2.kd = new_kd;
 
         return new_kd;
+    }
+}
+
+/**
+ * @brief 调整Phase2力矩（压腿力矩）
+ * @param increase true=增加绝对值，false=减少绝对值
+ * @return 调整后的电机1 phase2力矩绝对值
+ */
+float SpeedFollowMode::adjustPhase2Torque(bool increase) {
+    if (increase) {
+        // 增加压腿力矩绝对值
+        // 电机1 phase2: 负值，减小使绝对值增加
+        float new_torque1_phase2 = _config_motor1.phase2.torque - TORQUE_STEP;
+        if (new_torque1_phase2 < MOTOR1_PHASE2_MIN) {
+            new_torque1_phase2 = MOTOR1_PHASE2_MIN;
+        }
+        _config_motor1.phase2.torque = new_torque1_phase2;
+
+        // 电机2 phase2: 正值，增加使绝对值增加
+        float new_torque2_phase2 = _config_motor2.phase2.torque + TORQUE_STEP;
+        if (new_torque2_phase2 > MOTOR2_PHASE2_MAX) {
+            new_torque2_phase2 = MOTOR2_PHASE2_MAX;
+        }
+        _config_motor2.phase2.torque = new_torque2_phase2;
+
+        // 返回电机1 phase2的绝对值
+        return fabs(new_torque1_phase2);
+    } else {
+        // 减少压腿力矩绝对值
+        // 电机1 phase2: 负值，增加使绝对值减少
+        float new_torque1_phase2 = _config_motor1.phase2.torque + TORQUE_STEP;
+        if (new_torque1_phase2 > MOTOR1_PHASE2_MAX) {
+            new_torque1_phase2 = MOTOR1_PHASE2_MAX;
+        }
+        _config_motor1.phase2.torque = new_torque1_phase2;
+
+        // 电机2 phase2: 正值，减少使绝对值减少
+        float new_torque2_phase2 = _config_motor2.phase2.torque - TORQUE_STEP;
+        if (new_torque2_phase2 < MOTOR2_PHASE2_MIN) {
+            new_torque2_phase2 = MOTOR2_PHASE2_MIN;
+        }
+        _config_motor2.phase2.torque = new_torque2_phase2;
+
+        // 返回电机1 phase2的绝对值
+        return fabs(new_torque1_phase2);
     }
 }
 

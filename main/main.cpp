@@ -27,7 +27,7 @@
 static httpd_handle_t webserver = NULL;
 
 // ==================== 设备配置 ====================
-#define DEVICE_ID              0               
+#define DEVICE_ID              3               
 // 需要根据具体设备修改id
 // 以及wifi_webserver.h中wifi名称-----0号为调试
 

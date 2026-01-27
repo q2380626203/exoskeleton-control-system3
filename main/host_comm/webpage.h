@@ -185,9 +185,9 @@ static const char webpage_html[] = R"rawliteral(
         <div class="card">
             <div class="card-title">⚙️ 参数调整</div>
 
-            <!-- 力矩调整 -->
+            <!-- 抬腿力矩调整 -->
             <div class="control-group">
-                <label class="control-label">助力力矩 (Torque)</label>
+                <label class="control-label">抬腿力矩 (Phase1)</label>
                 <div class="control-row">
                     <div class="control-value" id="torque-value">1.5</div>
                     <div class="btn-group">
@@ -197,14 +197,14 @@ static const char webpage_html[] = R"rawliteral(
                 </div>
             </div>
 
-            <!-- Kd调整 -->
+            <!-- 压腿力矩调整 -->
             <div class="control-group">
-                <label class="control-label">阻尼系数 (Kd)</label>
+                <label class="control-label">压腿力矩 (Phase2)</label>
                 <div class="control-row">
-                    <div class="control-value" id="kd-value">0.08</div>
+                    <div class="control-value" id="phase2-value">0.7</div>
                     <div class="btn-group">
-                        <button class="btn btn-small" onclick="adjustKd(false)">➖ 减小</button>
-                        <button class="btn btn-small" onclick="adjustKd(true)">➕ 增加</button>
+                        <button class="btn btn-small" onclick="adjustPhase2Torque(false)">➖ 减小</button>
+                        <button class="btn btn-small" onclick="adjustPhase2Torque(true)">➕ 增加</button>
                     </div>
                 </div>
             </div>
@@ -268,14 +268,14 @@ static const char webpage_html[] = R"rawliteral(
                 .catch(error => console.error('Error:', error));
         }
 
-        // 调整Kd
-        function adjustKd(increase) {
+        // 调整压腿力矩（Phase2）
+        function adjustPhase2Torque(increase) {
             const action = increase ? 'increase' : 'decrease';
-            fetch(`/api/adjust_kd?action=${action}`)
+            fetch(`/api/adjust_phase2_torque?action=${action}`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'ok') {
-                        document.getElementById('kd-value').textContent = data.kd.toFixed(2);
+                        document.getElementById('phase2-value').textContent = data.phase2_torque.toFixed(1);
                     }
                 })
                 .catch(error => console.error('Error:', error));
@@ -309,7 +309,7 @@ static const char webpage_html[] = R"rawliteral(
                 .then(data => {
                     if (data.status === 'ok') {
                         document.getElementById('torque-value').textContent = data.torque.toFixed(1);
-                        document.getElementById('kd-value').textContent = data.kd.toFixed(2);
+                        document.getElementById('phase2-value').textContent = data.phase2_torque.toFixed(1);
                     }
                 })
                 .catch(error => console.error('Error:', error));

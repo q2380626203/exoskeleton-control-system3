@@ -1,6 +1,7 @@
 #ifndef SPEED_FOLLOW_MODE_H
 #define SPEED_FOLLOW_MODE_H
 
+#include <cmath>
 #include "motor_commands.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -155,11 +156,18 @@ public:
     // 返回调整后的电机1 phase1的kd值
     float adjustKd(bool increase);
 
+    // Web接口：调整Phase2力矩（增加或减少phase2.torque的绝对值）
+    // 返回调整后的电机1 phase2的torque绝对值（用于语音播报）
+    float adjustPhase2Torque(bool increase);
+
     // Web接口：获取当前电机1 phase1的torque值
     float getCurrentTorque() const { return _config_motor1.phase1.torque; }
 
     // Web接口：获取当前电机1 phase1的kd值
     float getCurrentKd() const { return _config_motor1.phase1.kd; }
+
+    // Web接口：获取当前电机1 phase2的torque绝对值
+    float getCurrentPhase2Torque() const { return fabs(_config_motor1.phase2.torque); }
 
     // 检查是否处于静止状态（用于按键触发语音播放）
     bool isStationary() const { return _is_stationary; }

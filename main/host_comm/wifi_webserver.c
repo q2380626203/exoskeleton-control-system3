@@ -181,11 +181,11 @@ static esp_err_t get_current_params_handler(httpd_req_t *req)
 
     if (g_speed_follow) {
         float torque = speed_follow_get_current_torque(g_speed_follow);
-        float kd = speed_follow_get_current_kd(g_speed_follow);
+        float phase2_torque = speed_follow_get_current_phase2_torque(g_speed_follow);
 
         snprintf(response, sizeof(response),
-                 "{\"status\":\"ok\",\"torque\":%.2f,\"kd\":%.3f}",
-                 torque, kd);
+                 "{\"status\":\"ok\",\"torque\":%.2f,\"phase2_torque\":%.2f}",
+                 torque, phase2_torque);
     } else {
         snprintf(response, sizeof(response),
                  "{\"status\":\"error\",\"message\":\"SpeedFollow not initialized\"}");
@@ -233,7 +233,8 @@ static esp_err_t adjust_torque_handler(httpd_req_t *req)
 }
 
 /* HTTP GET处理函数 - 调整Kd API */
-static esp_err_t adjust_kd_handler(httpd_req_t *req)
+/* HTTP GET处理函数 - 调整Phase2力矩API */
+static esp_err_t adjust_phase2_torque_handler(httpd_req_t *req)
 {
     char response[256];
     char query[64];
@@ -244,12 +245,12 @@ static esp_err_t adjust_kd_handler(httpd_req_t *req)
         if (httpd_query_key_value(query, "action", action, sizeof(action)) == ESP_OK) {
             bool increase = (strcmp(action, "increase") == 0);
 
-            // 调用SpeedFollowMode的adjustKd方法
+            // 调用SpeedFollowMode的adjustPhase2Torque方法
             if (g_speed_follow) {
-                float new_kd = speed_follow_adjust_kd(g_speed_follow, increase);
+                float new_phase2_torque = speed_follow_adjust_phase2_torque(g_speed_follow, increase);
 
                 snprintf(response, sizeof(response),
-                         "{\"status\":\"ok\",\"kd\":%.3f}", new_kd);
+                         "{\"status\":\"ok\",\"phase2_torque\":%.2f}", new_phase2_torque);
             } else {
                 snprintf(response, sizeof(response),
                          "{\"status\":\"error\",\"message\":\"SpeedFollow not initialized\"}");
@@ -332,10 +333,10 @@ static const httpd_uri_t api_adjust_torque = {
     .user_ctx  = NULL
 };
 
-static const httpd_uri_t api_adjust_kd = {
-    .uri       = "/api/adjust_kd",
+static const httpd_uri_t api_adjust_phase2_torque = {
+    .uri       = "/api/adjust_phase2_torque",
     .method    = HTTP_GET,
-    .handler   = adjust_kd_handler,
+    .handler   = adjust_phase2_torque_handler,
     .user_ctx  = NULL
 };
 
@@ -364,7 +365,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &api_get_motor_params);
         httpd_register_uri_handler(server, &api_get_current_params);
         httpd_register_uri_handler(server, &api_adjust_torque);
-        httpd_register_uri_handler(server, &api_adjust_kd);
+        httpd_register_uri_handler(server, &api_adjust_phase2_torque);
         httpd_register_uri_handler(server, &api_get_server_time);
 
         // ESP_LOGI(TAG, "Web服务器启动成功");  // 运行时日志已禁用
