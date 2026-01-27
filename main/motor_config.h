@@ -10,16 +10,16 @@ extern "C" {
 #define TORQUE_STEP 0.1f
 // 电机1 Phase1 力矩范围：0 ~ 2.5
 #define MOTOR1_PHASE1_MIN 0.0f
-#define MOTOR1_PHASE1_MAX 1.5f
+#define MOTOR1_PHASE1_MAX 1.8f
 // 电机1 Phase2 力矩范围：-2.5 ~ 0
-#define MOTOR1_PHASE2_MIN -1.5f
+#define MOTOR1_PHASE2_MIN -1.8f
 #define MOTOR1_PHASE2_MAX 0.0f
 // 电机2 Phase1 力矩范围：-2.5 ~ 0
-#define MOTOR2_PHASE1_MIN -1.5f
+#define MOTOR2_PHASE1_MIN -1.8f
 #define MOTOR2_PHASE1_MAX 0.0f
 // 电机2 Phase2 力矩范围：0 ~ 2.5
 #define MOTOR2_PHASE2_MIN 0.0f
-#define MOTOR2_PHASE2_MAX 1.5f
+#define MOTOR2_PHASE2_MAX 1.8f
 
 // ==================== KD 调整参数 ====================
 // KD 调整步长

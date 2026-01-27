@@ -11,7 +11,7 @@ extern "C" {
 #include "freertos/semphr.h"
 
 /* WiFi AP 和 Web服务器配置 */
-#define WIFI_AP_SSID            "登山外骨骼3"
+#define WIFI_AP_SSID            "登山外骨骼0"
 #define WIFI_AP_PASSWORD        "12345678"
 #define WIFI_AP_CHANNEL         1
 #define WIFI_AP_MAX_CONNECTIONS 4
